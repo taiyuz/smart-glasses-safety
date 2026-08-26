@@ -30,8 +30,8 @@ Risk profiles: `CONSERVATIVE`, `BALANCED`, `SENSITIVE`. Alert levels: idle / adv
 | Overlay latency/FPS + TTS debounce | Real |
 | Risk scorer + profiles | Real (heuristic, not a calibrated TTC) |
 | Tracker | Real IoU + diagonal Kalman on `(cx, cy, w, h, vx, vy)`; BYTE-style two-stage association. Not ByteTrack, not a full MOT solver |
-| Default detector | **ML Kit Object Detection** (bundled, STREAM_MODE). Real boxes. Coarse labels, **not** COCO vehicles |
-| Optional detector | **TFLite EfficientDet-Lite0** when Gradle downloads the official `.tflite`. Real preprocess / Interpreter / postprocess. Filters COCO to bicycle, car, motorcycle, bus, truck |
+| Default detector | **ML Kit Object Detection** (bundled, STREAM_MODE) when no `.tflite` is present. Real boxes. Coarse labels, **not** COCO vehicles |
+| Optional detector | **LiteRT EfficientDet-Lite0** when Gradle downloads the official `.tflite`. Real preprocess / InterpreterApi / postprocess. Filters COCO to bicycle, car, motorcycle, bus, truck. CPU only |
 | `MockVehicleDetector` | Debug-only (`BuildConfig.DEBUG && USE_MOCK_DETECTOR`, default **false**). Synthetic centered car box |
 | Load failure | Overlay + log show `DETECTOR FAILED`. **No silent fake boxes** |
 | GPU / NNAPI | **Not enabled.** Later work: per-device accuracy, warmup, CPU fallback. No invented FPS from delegates |
@@ -51,16 +51,15 @@ See `models/SOURCE.md` for the EfficientDet URL, SHA-256, and licenses.
 
 - Kotlin, Android SDK 28–34, Java 17
 - CameraX **1.4.2**, AppCompat / Material, view binding, coroutines
-- ML Kit Object Detection 17.0.2 (default)
-- TensorFlow Lite 2.16.1 (optional EfficientDet-Lite0 path)
+- ML Kit Object Detection 17.0.2 (default when no weights file)
+- LiteRT 1.4.2 InterpreterApi (optional EfficientDet-Lite0 path, CPU)
 - Android `TextToSpeech`
 - JUnit 4 JVM tests for scorer + tracker
 
 ## Layout
 
-- `app/src/main/java/com/smartglasses/safety/MainActivity.kt` — camera bind, permission, overlay
-- `.../pipeline/DetectorFactory.kt` — ML Kit / TFLite / debug-mock selection
-- `.../pipeline/TFLiteVehicleDetector.kt` — Interpreter preprocess / invoke / postprocess
+- `app/src/main/java/com/smartglasses/safety/MainActivity.kt` — camera bind, permission, overlay, detector selection
+- `.../pipeline/LiteRtVehicleDetector.kt` — EfficientDet preprocess / InterpreterApi / postprocess
 - `.../pipeline/MlKitVehicleDetector.kt` — bundled STREAM_MODE detector
 - `.../pipeline/VehicleTracker.kt` — IoU + Kalman
 - `.../pipeline/RiskScorer.kt` — profiles and thresholds
