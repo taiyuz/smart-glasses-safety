@@ -9,70 +9,70 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VehicleTrackerTest {
-    private fun car(box: RectBox, confidence: Float = 0.9f): VehicleDetection {
-        return VehicleDetection(label = "car", confidence = confidence, box = box)
-    }
-
     @Test
-    fun emptyDetectionsAreSafe() {
-        val tracker = VehicleTracker(frameWidth = 1000f)
-        assertTrue(tracker.track(emptyList()).isEmpty())
-        assertTrue(tracker.track(emptyList()).isEmpty())
+    fun emptyDetectionsDoNotCrash() {
+        val tracker = VehicleTracker(frameWidth = 100f)
+        val result = tracker.track(emptyList())
+        assertTrue(result.isEmpty())
     }
 
     @Test
     fun highIouPersistsTrackId() {
-        val tracker = VehicleTracker(frameWidth = 1000f)
-        val first = tracker.track(listOf(car(RectBox(100f, 100f, 200f, 200f))))
-        val second = tracker.track(listOf(car(RectBox(110f, 105f, 210f, 205f))))
+        val tracker = VehicleTracker(frameWidth = 200f, maxMisses = 5)
+        val first = tracker.track(listOf(car(RectBox(20f, 20f, 80f, 80f))))
+        val second = tracker.track(listOf(car(RectBox(22f, 21f, 83f, 82f))))
         assertEquals(1, first.size)
         assertEquals(1, second.size)
         assertEquals(first[0].id, second[0].id)
     }
 
     @Test
-    fun farBoxGetsNewId() {
-        val tracker = VehicleTracker(frameWidth = 1000f)
-        val first = tracker.track(listOf(car(RectBox(100f, 100f, 200f, 200f))))
-        val second = tracker.track(listOf(car(RectBox(700f, 100f, 800f, 200f))))
-        assertEquals(1, first.size)
-        assertEquals(1, second.size)
-        assertNotEquals(first[0].id, second[0].id)
-    }
-
-    @Test
-    fun expiresAfterMissesThenAssignsNewId() {
-        val tracker = VehicleTracker(frameWidth = 1000f, maxMisses = 2)
-        val box = RectBox(100f, 100f, 200f, 200f)
-        val original = tracker.track(listOf(car(box)))
-        assertEquals(1, original.size)
-        assertTrue(tracker.track(emptyList()).isEmpty())
-        assertTrue(tracker.track(emptyList()).isEmpty())
-        val revived = tracker.track(listOf(car(box)))
-        assertEquals(1, revived.size)
-        assertNotEquals(original[0].id, revived[0].id)
-    }
-
-    @Test
-    fun recoversSameIdWhenMissesStayBelowExpiry() {
-        val tracker = VehicleTracker(frameWidth = 1000f, maxMisses = 3)
-        val box = RectBox(100f, 100f, 200f, 200f)
-        val original = tracker.track(listOf(car(box)))
-        tracker.track(emptyList())
-        val recovered = tracker.track(listOf(car(box)))
-        assertEquals(original[0].id, recovered[0].id)
-    }
-
-    @Test
-    fun twoBoxesInOneFrameGetDistinctIds() {
-        val tracker = VehicleTracker(frameWidth = 1000f)
-        val tracked = tracker.track(
+    fun distantBoxGetsNewId() {
+        val tracker = VehicleTracker(frameWidth = 200f, maxMisses = 5)
+        val left = tracker.track(listOf(car(RectBox(10f, 10f, 40f, 40f))))
+        val both = tracker.track(
             listOf(
-                car(RectBox(50f, 50f, 120f, 120f)),
-                car(RectBox(400f, 80f, 500f, 180f))
+                car(RectBox(10f, 10f, 40f, 40f)),
+                car(RectBox(150f, 120f, 190f, 180f))
             )
         )
-        assertEquals(2, tracked.size)
-        assertNotEquals(tracked[0].id, tracked[1].id)
+        assertEquals(1, left.size)
+        assertEquals(2, both.size)
+        val ids = both.map { it.id }.toSet()
+        assertTrue(left[0].id in ids)
+        assertEquals(2, ids.size)
+    }
+
+    @Test
+    fun farReplacementIsNotTheSameTrack() {
+        val tracker = VehicleTracker(frameWidth = 200f, maxMisses = 5)
+        val first = tracker.track(listOf(car(RectBox(10f, 10f, 40f, 40f))))
+        val far = tracker.track(listOf(car(RectBox(150f, 120f, 190f, 180f))))
+        val farId = far.first { it.detection.box.centerX > 100f }.id
+        assertNotEquals(first[0].id, farId)
+    }
+
+    @Test
+    fun expiresAfterMisses() {
+        val tracker = VehicleTracker(frameWidth = 200f, maxMisses = 3)
+        tracker.track(listOf(car(RectBox(20f, 20f, 80f, 80f))))
+        tracker.track(emptyList())
+        tracker.track(emptyList())
+        val stillThere = tracker.track(emptyList())
+        // three empty frames with maxMisses=3: misses 1,2, then 3 removes
+        assertTrue(stillThere.isEmpty())
+    }
+
+    @Test
+    fun coastsUntilExpired() {
+        val tracker = VehicleTracker(frameWidth = 200f, maxMisses = 3)
+        val first = tracker.track(listOf(car(RectBox(20f, 20f, 80f, 80f))))
+        val coast = tracker.track(emptyList())
+        assertEquals(1, coast.size)
+        assertEquals(first[0].id, coast[0].id)
+    }
+
+    private fun car(box: RectBox): VehicleDetection {
+        return VehicleDetection(label = "car", confidence = 0.9f, box = box)
     }
 }

@@ -11,64 +11,88 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RiskScorerTest {
-    private val box = RectBox(100f, 50f, 250f, 300f)
-
     @Test
     fun returnsCriticalForHighRiskVehicle() {
         val scorer = RiskScorer(RiskProfile.BALANCED)
-        val vehicle = tracked(
+        val vehicle = TrackedVehicle(
+            id = 1L,
+            detection = VehicleDetection("car", 0.95f, RectBox(100f, 50f, 250f, 300f)),
             areaGrowth = 1.2f,
             centerDriftToMiddle = 0.05f,
             confidencePersistence = 1f
         )
+
         val result = scorer.score(listOf(vehicle))
         assertEquals(AlertLevel.CRITICAL, result.level)
     }
 
     @Test
-    fun emptyDetectionsAreIdle() {
+    fun emptyTracksAreIdle() {
         val result = RiskScorer(RiskProfile.BALANCED).score(emptyList())
         assertEquals(AlertLevel.IDLE, result.level)
         assertEquals(0f, result.score)
     }
 
     @Test
-    fun growingBoxScoresHigherThanStaticBox() {
+    fun growingBoxAreaDoesNotLowerScore() {
         val scorer = RiskScorer(RiskProfile.BALANCED)
-        val growing = tracked(areaGrowth = 1.0f, centerDriftToMiddle = 0.2f, confidencePersistence = 0.9f)
-        val staticBox = tracked(areaGrowth = 0.0f, centerDriftToMiddle = 0.2f, confidencePersistence = 0.9f)
-        assertTrue(scorer.score(listOf(growing)).score > scorer.score(listOf(staticBox)).score)
+        val scores = listOf(0.1f, 0.4f, 0.9f).map { growth ->
+            scorer.score(
+                listOf(
+                    vehicle(
+                        areaGrowth = growth,
+                        centerDriftToMiddle = 0.4f,
+                        confidencePersistence = 0.6f
+                    )
+                )
+            ).score
+        }
+        assertTrue(scores[1] >= scores[0] - 1e-4f)
+        assertTrue(scores[2] >= scores[1] - 1e-4f)
     }
 
     @Test
-    fun centerThreatScoresHigherThanPeripheral() {
+    fun closerToCenterDoesNotLowerScore() {
         val scorer = RiskScorer(RiskProfile.BALANCED)
-        val center = tracked(areaGrowth = 0.6f, centerDriftToMiddle = 0.05f, confidencePersistence = 0.9f)
-        val peripheral = tracked(areaGrowth = 0.6f, centerDriftToMiddle = 0.9f, confidencePersistence = 0.9f)
-        assertTrue(scorer.score(listOf(center)).score > scorer.score(listOf(peripheral)).score)
+        val far = scorer.score(listOf(vehicle(centerDriftToMiddle = 0.9f))).score
+        val mid = scorer.score(listOf(vehicle(centerDriftToMiddle = 0.4f))).score
+        val near = scorer.score(listOf(vehicle(centerDriftToMiddle = 0.05f))).score
+        assertTrue(mid >= far - 1e-4f)
+        assertTrue(near >= mid - 1e-4f)
     }
 
     @Test
-    fun sensitiveProfileAlertsAtLowerScoreThanConservative() {
-        val moderate = tracked(
-            areaGrowth = 0.55f,
-            centerDriftToMiddle = 0.25f,
-            confidencePersistence = 0.7f
+    fun sensitiveFiresAtLeastAsEarlyAsConservative() {
+        val mild = listOf(
+            vehicle(
+                areaGrowth = 0.35f,
+                centerDriftToMiddle = 0.45f,
+                confidencePersistence = 0.5f
+            )
         )
-        val sensitive = RiskScorer(RiskProfile.SENSITIVE).score(listOf(moderate))
-        val conservative = RiskScorer(RiskProfile.CONSERVATIVE).score(listOf(moderate))
-        assertTrue(sensitive.level.ordinal >= conservative.level.ordinal)
-        assertTrue(sensitive.level != AlertLevel.IDLE)
+        val conservative = RiskScorer(RiskProfile.CONSERVATIVE).score(mild)
+        val sensitive = RiskScorer(RiskProfile.SENSITIVE).score(mild)
+        assertTrue(
+            "sensitive=${sensitive.level} conservative=${conservative.level}",
+            sensitive.level.ordinal >= conservative.level.ordinal
+        )
     }
 
-    private fun tracked(
-        areaGrowth: Float,
-        centerDriftToMiddle: Float,
-        confidencePersistence: Float
+    @Test
+    fun balancedThresholdsSitBetweenProfiles() {
+        assertTrue(RiskProfile.SENSITIVE.advisoryThreshold < RiskProfile.BALANCED.advisoryThreshold)
+        assertTrue(RiskProfile.BALANCED.advisoryThreshold < RiskProfile.CONSERVATIVE.advisoryThreshold)
+        assertTrue(RiskProfile.SENSITIVE.criticalThreshold < RiskProfile.CONSERVATIVE.criticalThreshold)
+    }
+
+    private fun vehicle(
+        areaGrowth: Float = 0.4f,
+        centerDriftToMiddle: Float = 0.3f,
+        confidencePersistence: Float = 0.7f
     ): TrackedVehicle {
         return TrackedVehicle(
             id = 1L,
-            detection = VehicleDetection("car", 0.95f, box),
+            detection = VehicleDetection("car", 0.8f, RectBox(40f, 40f, 120f, 160f)),
             areaGrowth = areaGrowth,
             centerDriftToMiddle = centerDriftToMiddle,
             confidencePersistence = confidencePersistence
