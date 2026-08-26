@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feat/**]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -20,13 +20,17 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: "tools platform-tools platforms;android-34 build-tools;34.0.0"
 
+      # gradle-wrapper.jar is a binary and is not committed. Android Studio
+      # generates it on first sync. CI provisions Gradle 8.7 directly.
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      # gradle-wrapper.jar is not committed (MCP would corrupt the binary).
-      # CI invokes Gradle 8.7 from setup-gradle, not ./gradlew.
+      # Unit tests only. assembleDebug is not run here: it needs a full local
+      # Android Studio / SDK workflow (signing, extra images) beyond this job.
       - name: Run JVM unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
