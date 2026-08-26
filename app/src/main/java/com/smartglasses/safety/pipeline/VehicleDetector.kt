@@ -4,10 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 
 interface VehicleDetector {
-    val backendName: String
-    val isReady: Boolean
-    val statusMessage: String
-
     fun initialize(context: Context)
     fun detect(frame: Bitmap): List<VehicleDetection>
     fun close()
@@ -15,11 +11,6 @@ interface VehicleDetector {
 
 class MockVehicleDetector : VehicleDetector {
     private val labels = setOf("car", "truck", "bus", "motorcycle", "bicycle")
-
-    override val backendName: String = "MockVehicleDetector"
-    override val isReady: Boolean = true
-    override val statusMessage: String =
-        "MOCK detector — synthetic centered car box. Debug-only (USE_MOCK_DETECTOR)."
 
     override fun initialize(context: Context) = Unit
 
@@ -34,15 +25,5 @@ class MockVehicleDetector : VehicleDetector {
         return listOf(detection).filter { it.label in labels }
     }
 
-    override fun close() = Unit
-}
-
-class UnavailableDetector(reason: String) : VehicleDetector {
-    override val backendName: String = "unavailable"
-    override val isReady: Boolean = false
-    override val statusMessage: String = "DETECTOR FAILED: $reason"
-
-    override fun initialize(context: Context) = Unit
-    override fun detect(frame: Bitmap): List<VehicleDetection> = emptyList()
     override fun close() = Unit
 }
