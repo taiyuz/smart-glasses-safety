@@ -7,10 +7,6 @@ interface VehicleDetector {
     fun initialize(context: Context)
     fun detect(frame: Bitmap): List<VehicleDetection>
     fun close()
-
-    /** Non-null when the detector cannot run (init failure). Never used to invent boxes. */
-    val diagnosticMessage: String?
-        get() = null
 }
 
 class MockVehicleDetector : VehicleDetector {
@@ -19,7 +15,6 @@ class MockVehicleDetector : VehicleDetector {
     override fun initialize(context: Context) = Unit
 
     override fun detect(frame: Bitmap): List<VehicleDetection> {
-        // Debug-only synthetic box so the tracker/scorer/TTS path can run without a model.
         val center = RectBox(
             left = frame.width * 0.35f,
             top = frame.height * 0.35f,

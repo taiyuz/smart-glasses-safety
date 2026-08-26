@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.util.Size
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -16,6 +17,7 @@ import androidx.core.content.ContextCompat
 import com.smartglasses.safety.databinding.ActivityMainBinding
 import com.smartglasses.safety.pipeline.AlertLevel
 import com.smartglasses.safety.pipeline.AlertManager
+import com.smartglasses.safety.pipeline.LiteRtVehicleDetector
 import com.smartglasses.safety.pipeline.LocalEventLogger
 import com.smartglasses.safety.pipeline.MlKitVehicleDetector
 import com.smartglasses.safety.pipeline.MockVehicleDetector
@@ -33,10 +35,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var alertView: TextView
 
-    // Release/default: MlKitVehicleDetector. Mock only when DEBUG && USE_MOCK_DETECTOR.
     private val detector: VehicleDetector =
         if (BuildConfig.DEBUG && BuildConfig.USE_MOCK_DETECTOR) {
             MockVehicleDetector()
+        } else if (BuildConfig.USE_LITERT_DETECTOR) {
+            LiteRtVehicleDetector()
         } else {
             MlKitVehicleDetector()
         }
@@ -60,10 +63,6 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         alertManager = AlertManager(this)
         detector.initialize(this)
-        detector.diagnosticMessage?.let { message ->
-            Log.e(TAG, message)
-            alertView.text = message
-        }
 
         checkCameraPermissionAndStart()
     }
@@ -84,40 +83,44 @@ class MainActivity : AppCompatActivity() {
                 it.surfaceProvider = binding.previewView.surfaceProvider
             }
 
-            val analyzer = ImageAnalysis.Builder()
+            val analysisBuilder = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
+                .setTargetResolution(Size(640, 480))
+            binding.previewView.display?.let { display ->
+                analysisBuilder.setTargetRotation(display.rotation)
+            }
+            val analyzer = analysisBuilder.build()
 
             analyzer.setAnalyzer(cameraExecutor) { imageProxy ->
-                val startedAt = SystemClock.elapsedRealtime()
-                val bitmap = imageProxy.toBitmap()
-                if (bitmap == null) {
+                try {
+                    val frameTimestampNs = imageProxy.imageInfo.timestamp
+                    val startedAt = SystemClock.elapsedRealtime()
+                    val bitmap = imageProxy.toBitmap() ?: return@setAnalyzer
+
+                    if (!::tracker.isInitialized) {
+                        tracker = VehicleTracker(frameWidth = bitmap.width.toFloat())
+                    }
+
+                    val detections = detector.detect(bitmap)
+                    val tracked = tracker.track(detections)
+                    val risk = riskScorer.score(tracked)
+
+                    val latency = SystemClock.elapsedRealtime() - startedAt
+                    performanceMonitor.markFrame(latency)
+                    val perf = performanceMonitor.snapshot()
+                    eventLogger.logRisk(risk, perf)
+                    Log.d(TAG, "frameTimestampNs=$frameTimestampNs")
+
+                    runOnUiThread {
+                        alertView.text =
+                            "${risk.message}\nLatency: ${latency}ms | FPS: %.1f | t=$frameTimestampNs"
+                                .format(perf.fps)
+                        setAlertColor(risk.level)
+                        alertManager.announce(risk.message, risk.level)
+                    }
+                } finally {
                     imageProxy.close()
-                    return@setAnalyzer
                 }
-
-                if (!::tracker.isInitialized) {
-                    tracker = VehicleTracker(frameWidth = bitmap.width.toFloat())
-                }
-
-                val detections = detector.detect(bitmap)
-                val tracked = tracker.track(detections)
-                val risk = riskScorer.score(tracked)
-
-                val latency = SystemClock.elapsedRealtime() - startedAt
-                performanceMonitor.markFrame(latency)
-                val perf = performanceMonitor.snapshot()
-                eventLogger.logRisk(risk, perf)
-
-                runOnUiThread {
-                    val diag = detector.diagnosticMessage
-                    val headline = diag ?: risk.message
-                    alertView.text = "$headline\nLatency: ${latency}ms | FPS: %.1f".format(perf.fps)
-                    setAlertColor(if (diag != null) AlertLevel.WARNING else risk.level)
-                }
-
-                alertManager.announce(risk.message, risk.level)
-                imageProxy.close()
             }
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
