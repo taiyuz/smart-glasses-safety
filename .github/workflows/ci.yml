@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/**]
   pull_request:
 
 jobs:
@@ -26,10 +26,7 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      # gradle-wrapper.jar is not committed (MCP/binary-safe). CI therefore
-      # invokes the Gradle 8.7 distribution from setup-gradle, not ./gradlew.
+      # gradle-wrapper.jar is not committed (MCP would corrupt the binary).
+      # CI invokes Gradle 8.7 from setup-gradle, not ./gradlew.
       - name: Run JVM unit tests
         run: gradle :app:testDebugUnitTest --stacktrace
-
-      # assembleDebug is not run here: it needs a fuller SDK/build-tools image
-      # than this job installs. Build the APK from Android Studio locally.
