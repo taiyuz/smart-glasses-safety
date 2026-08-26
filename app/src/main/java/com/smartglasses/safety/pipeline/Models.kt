@@ -9,7 +9,18 @@ data class RectBox(
     val width: Float = right - left
     val height: Float = bottom - top
     val centerX: Float = (left + right) / 2f
+    val centerY: Float = (top + bottom) / 2f
     val area: Float = width * height
+
+    fun iou(other: RectBox): Float {
+        val ix1 = maxOf(left, other.left)
+        val iy1 = maxOf(top, other.top)
+        val ix2 = minOf(right, other.right)
+        val iy2 = minOf(bottom, other.bottom)
+        val inter = (ix2 - ix1).coerceAtLeast(0f) * (iy2 - iy1).coerceAtLeast(0f)
+        val union = area + other.area - inter
+        return if (union <= 0f) 0f else inter / union
+    }
 }
 
 data class VehicleDetection(
