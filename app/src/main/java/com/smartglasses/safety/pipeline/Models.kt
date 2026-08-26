@@ -17,7 +17,7 @@ data class RectBox(
         val iy1 = maxOf(top, other.top)
         val ix2 = minOf(right, other.right)
         val iy2 = minOf(bottom, other.bottom)
-        val inter = maxOf(0f, ix2 - ix1) * maxOf(0f, iy2 - iy1)
+        val inter = (ix2 - ix1).coerceAtLeast(0f) * (iy2 - iy1).coerceAtLeast(0f)
         val union = area + other.area - inter
         return if (union <= 0f) 0f else inter / union
     }

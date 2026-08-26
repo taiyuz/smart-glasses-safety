@@ -16,10 +16,8 @@ class VehicleTrackerTest {
     @Test
     fun emptyDetectionsAreSafe() {
         val tracker = VehicleTracker(frameWidth = 1000f)
-        val first = tracker.track(emptyList())
-        val second = tracker.track(emptyList())
-        assertTrue(first.isEmpty())
-        assertTrue(second.isEmpty())
+        assertTrue(tracker.track(emptyList()).isEmpty())
+        assertTrue(tracker.track(emptyList()).isEmpty())
     }
 
     @Test
@@ -27,7 +25,6 @@ class VehicleTrackerTest {
         val tracker = VehicleTracker(frameWidth = 1000f)
         val first = tracker.track(listOf(car(RectBox(100f, 100f, 200f, 200f))))
         val second = tracker.track(listOf(car(RectBox(110f, 105f, 210f, 205f))))
-
         assertEquals(1, first.size)
         assertEquals(1, second.size)
         assertEquals(first[0].id, second[0].id)
@@ -38,7 +35,6 @@ class VehicleTrackerTest {
         val tracker = VehicleTracker(frameWidth = 1000f)
         val first = tracker.track(listOf(car(RectBox(100f, 100f, 200f, 200f))))
         val second = tracker.track(listOf(car(RectBox(700f, 100f, 800f, 200f))))
-
         assertEquals(1, first.size)
         assertEquals(1, second.size)
         assertNotEquals(first[0].id, second[0].id)
@@ -50,10 +46,8 @@ class VehicleTrackerTest {
         val box = RectBox(100f, 100f, 200f, 200f)
         val original = tracker.track(listOf(car(box)))
         assertEquals(1, original.size)
-
         assertTrue(tracker.track(emptyList()).isEmpty())
         assertTrue(tracker.track(emptyList()).isEmpty())
-
         val revived = tracker.track(listOf(car(box)))
         assertEquals(1, revived.size)
         assertNotEquals(original[0].id, revived[0].id)
@@ -66,7 +60,6 @@ class VehicleTrackerTest {
         val original = tracker.track(listOf(car(box)))
         tracker.track(emptyList())
         val recovered = tracker.track(listOf(car(box)))
-
         assertEquals(original[0].id, recovered[0].id)
     }
 
