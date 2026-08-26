@@ -34,15 +34,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var alertView: TextView
+    private lateinit var detector: VehicleDetector
+    private var detectorStatus: String = "detector not initialized"
 
-    private val detector: VehicleDetector =
-        if (BuildConfig.DEBUG && BuildConfig.USE_MOCK_DETECTOR) {
-            MockVehicleDetector()
-        } else if (BuildConfig.USE_LITERT_DETECTOR) {
-            LiteRtVehicleDetector()
-        } else {
-            MlKitVehicleDetector()
-        }
     private val riskScorer = RiskScorer(profile = RiskProfile.BALANCED)
     private lateinit var tracker: VehicleTracker
     private lateinit var alertManager: AlertManager
@@ -58,13 +52,39 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
         alertView = binding.alertText
         cameraExecutor = Executors.newSingleThreadExecutor()
         alertManager = AlertManager(this)
-        detector.initialize(this)
-
+        bindDetector()
         checkCameraPermissionAndStart()
+    }
+
+    private fun bindDetector() {
+        if (BuildConfig.DEBUG && BuildConfig.USE_MOCK_DETECTOR) {
+            detector = MockVehicleDetector()
+            detector.initialize(this)
+            detectorStatus = "MOCK detector (USE_MOCK_DETECTOR)"
+            return
+        }
+        val litert = LiteRtVehicleDetector()
+        try {
+            litert.initialize(this)
+            detector = litert
+            detectorStatus = "LiteRT EfficientDet-Lite0 (CPU)"
+            return
+        } catch (e: Exception) {
+            Log.i(TAG, "LiteRT not used; ML Kit default. ${e.message}")
+            litert.close()
+        }
+        try {
+            detector = MlKitVehicleDetector()
+            detector.initialize(this)
+            detectorStatus = "ML Kit Object Detection (STREAM_MODE)"
+        } catch (e: Exception) {
+            Log.e(TAG, "ML Kit failed", e)
+            detector = MlKitVehicleDetector()
+            detectorStatus = "DETECTOR FAILED: ${e.message}"
+        }
     }
 
     private fun checkCameraPermissionAndStart() {
@@ -82,50 +102,37 @@ class MainActivity : AppCompatActivity() {
             val preview = Preview.Builder().build().also {
                 it.surfaceProvider = binding.previewView.surfaceProvider
             }
-
-            val analysisBuilder = ImageAnalysis.Builder()
+            val analyzer = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setTargetResolution(Size(640, 480))
-            binding.previewView.display?.let { display ->
-                analysisBuilder.setTargetRotation(display.rotation)
-            }
-            val analyzer = analysisBuilder.build()
-
+                .build()
             analyzer.setAnalyzer(cameraExecutor) { imageProxy ->
                 try {
-                    val frameTimestampNs = imageProxy.imageInfo.timestamp
                     val startedAt = SystemClock.elapsedRealtime()
                     val bitmap = imageProxy.toBitmap() ?: return@setAnalyzer
-
                     if (!::tracker.isInitialized) {
                         tracker = VehicleTracker(frameWidth = bitmap.width.toFloat())
                     }
-
-                    val detections = detector.detect(bitmap)
+                    val failed = detectorStatus.startsWith("DETECTOR FAILED")
+                    val detections = if (failed) emptyList() else detector.detect(bitmap)
                     val tracked = tracker.track(detections)
                     val risk = riskScorer.score(tracked)
-
                     val latency = SystemClock.elapsedRealtime() - startedAt
                     performanceMonitor.markFrame(latency)
                     val perf = performanceMonitor.snapshot()
                     eventLogger.logRisk(risk, perf)
-                    Log.d(TAG, "frameTimestampNs=$frameTimestampNs")
-
+                    val overlay = "${if (failed) detectorStatus else risk.message}\n$detectorStatus\nLatency: ${latency}ms | FPS: %.1f".format(perf.fps)
                     runOnUiThread {
-                        alertView.text =
-                            "${risk.message}\nLatency: ${latency}ms | FPS: %.1f | t=$frameTimestampNs"
-                                .format(perf.fps)
+                        alertView.text = overlay
                         setAlertColor(risk.level)
-                        alertManager.announce(risk.message, risk.level)
+                        if (!failed) alertManager.announce(risk.message, risk.level)
                     }
                 } finally {
                     imageProxy.close()
                 }
             }
-
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
             cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(this, cameraSelector, preview, analyzer)
+            cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analyzer)
         }, ContextCompat.getMainExecutor(this))
     }
 
@@ -141,7 +148,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        detector.close()
+        if (::detector.isInitialized) detector.close()
         alertManager.shutdown()
         cameraExecutor.shutdown()
     }
