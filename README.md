@@ -2,96 +2,88 @@
 
 Android/Kotlin on-device pipeline: camera frames → detections → short-horizon tracks → risk score → visual and spoken alerts.
 
-Wearable-safety prototype (crossing / approach warnings). **Not a production ADAS product.** No claimed mAP, FPS, or end-to-end latency — the overlay prints whatever this device just measured.
-
-Useful as a systems interview artifact: CameraX backpressure, frame timestamps, on-device detector swap, and alert UX constraints.
-
-## What is real vs mock vs not claimed
-
-| Piece | Status |
-| --- | --- |
-| CameraX preview + `ImageAnalysis` | Real. Back camera, lifecycle-bound, `setTargetResolution(640, 480)`. |
-| `STRATEGY_KEEP_ONLY_LATEST` | Real. Analyzer holds one in-flight frame; extras are dropped. |
-| Frame timestamps | Real. `imageProxy.imageInfo.timestamp` is logged and shown on the overlay. |
-| Overlay + TTS debounce | Real (`AlertManager` cooldowns). TTS is posted off the analyzer thread. |
-| Risk scorer + profiles | Real, covered by JVM tests. |
-| Tracker | Real SORT (IoU + CV Kalman). See [DESIGN.md](DESIGN.md). |
-| **Default detector** | **`MlKitVehicleDetector`** — bundled ML Kit Object Detection. |
-| `MockVehicleDetector` | Debug-only: `BuildConfig.DEBUG && BuildConfig.USE_MOCK_DETECTOR` (flag default `false`). |
-| `LiteRtVehicleDetector` | Optional. `USE_LITERT_DETECTOR`. GPU → NNAPI → CPU `InterpreterApi` delegates. Fails visibly without a `.tflite` in `assets/`; never invents boxes. |
-| Vehicle-class labels | **Not claimed.** ML Kit coarse classes are not vehicles; classification is off. Boxes are object *candidates*. |
-| GPU / NNAPI speedups | **Implemented as fallback wiring, not measured.** No FPS/latency claims from enabling a delegate. |
-| Production ADAS | **Not this repo.** |
+Built as a wearable-safety prototype (crossing / approach warnings). **Not a production ADAS product.** Useful as a systems interview artifact: frame timing, backpressure, and on-device UX constraints.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  cam[CameraX ImageAnalysis KEEP_ONLY_LATEST] --> bmp[YUV to Bitmap]
-  bmp --> det[VehicleDetector]
-  det --> tr[VehicleTracker SORT]
+  cam[CameraX ImageAnalysis] --> det[VehicleDetector]
+  det --> tr[VehicleTracker]
   tr --> risk[RiskScorer]
   risk --> ui[overlay plus TTS]
   risk --> log[LocalEventLogger]
 ```
 
-`MainActivity` constructs `MlKitVehicleDetector` unless `BuildConfig.DEBUG && USE_MOCK_DETECTOR`, or `USE_LITERT_DETECTOR`. It binds back-camera preview and analysis on a **single-thread executor**. Each kept frame is closed in `try/finally`: bitmap → `detect` → SORT track → score → overlay. `ImageProxy.imageInfo.timestamp` is recorded per frame.
+`MainActivity` binds back-camera preview and `ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST` on a single-thread executor. Keep-only-latest is the backpressure policy: if inference is slower than the camera, **the analyzer drops stale frames and keeps the newest**. That trades completeness for freshness, which is what a crossing warning needs. There is no unbounded queue.
+
+Each kept frame: YUV → bitmap → `detect` → IoU + constant-velocity Kalman track → weighted score from box-area growth, center threat, and confidence persistence → `AlertManager` (level-dependent TTS cooldown) and a latency/FPS overlay that also names the active detector.
 
 Risk profiles: `CONSERVATIVE`, `BALANCED`, `SENSITIVE`. Alert levels: idle / advisory / warning / critical.
 
-## Why KEEP_ONLY_LATEST
+## What is real vs mock vs not claimed
 
-Glasses and phones cannot queue a backlog of camera frames behind a slow detector. `STRATEGY_KEEP_ONLY_LATEST` drops stale frames so the tracker/scorer see the newest image. Overlay `Latency` is *that frame's* wall time (convert + detect + track + score), not a lab benchmark. FPS is a rolling window from `PerformanceMonitor`.
+| Piece | Status |
+| --- | --- |
+| CameraX preview + analysis bind | Real |
+| `STRATEGY_KEEP_ONLY_LATEST` backpressure | Real |
+| Overlay latency/FPS + TTS debounce | Real |
+| Risk scorer + profiles | Real (heuristic, not a calibrated TTC) |
+| Tracker | Real IoU + diagonal Kalman on `(cx, cy, w, h, vx, vy)`; BYTE-style two-stage association. Not ByteTrack, not a full MOT solver |
+| Default detector | **ML Kit Object Detection** (bundled, STREAM_MODE). Real boxes. Coarse labels, **not** COCO vehicles |
+| Optional detector | **TFLite EfficientDet-Lite0** when Gradle downloads the official `.tflite`. Real preprocess / Interpreter / postprocess. Filters COCO to bicycle, car, motorcycle, bus, truck |
+| `MockVehicleDetector` | Debug-only (`BuildConfig.DEBUG && USE_MOCK_DETECTOR`, default **false**). Synthetic centered car box |
+| Load failure | Overlay + log show `DETECTOR FAILED`. **No silent fake boxes** |
+| GPU / NNAPI | **Not enabled.** Later work: per-device accuracy, warmup, CPU fallback. No invented FPS from delegates |
+| End-to-end latency / mAP | **Not claimed.** Overlay prints whatever the device measured that session |
+| Production ADAS | **Not this repo** |
 
-ML Kit `detect()` blocks the analyzer thread with `Tasks.await` and a short timeout. While it runs, CameraX drops newer frames — that is the backpressure. TTS is announced on the main thread so speech does not stretch analyzer occupancy.
-
-## Detector choice
-
-Default artifact: `com.google.mlkit:object-detection:17.0.2` (bundled in the APK). `STREAM_MODE` + `enableMultipleObjects()`. Classification is off.
-
-Optional LiteRT path (`com.google.ai.edge.litert:litert` / `litert-gpu` / `litert-gpu-api` **1.4.2**, Interpreter line): constructs `GpuDelegate`, then `NnApiDelegate`, then CPU `InterpreterApi`. Whichever binds is logged. LiteRT 2.x Interpreter is CPU-only, so 1.4.2 is the current Interpreter+delegate coordinate. Without a `.tflite` in `assets/`, `initialize` throws. No binary model is in git.
-
-To force the mock in a debug APK, set `USE_MOCK_DETECTOR` to `true` (still ignored for release because of the `BuildConfig.DEBUG` guard).
+See `models/SOURCE.md` for the EfficientDet URL, SHA-256, and licenses.
 
 ## On-device constraints
 
-- Wearable thermal/power budget: 640×480 analysis, keep-latest backpressure, one analyzer thread.
-- No cloud round-trip in the detect/track/score path.
-- TTS is debounced by alert level and posted off the analyzer.
+- **Thermal:** continuous 320×320 (or ML Kit) inference on a glasses SoC will throttle. The analyzer thread is already single; do not add extra workers that fight the camera.
+- **Camera FPS vs model FPS:** the camera may deliver 30 fps; keep-only-latest means effective rate is however fast `detect` returns. That is expected.
+- **Model size:** EfficientDet-Lite0 with metadata is ~4.4 MB. Download happens at `preBuild`, not at runtime, and is skipped (with a warning) if the network or checksum fails.
+- **Frame timing:** `PerformanceMonitor` records per-frame `elapsedRealtime` and a rolling FPS. Treat those numbers as device-specific, not a spec.
 
 ## Stack
 
-- Kotlin, Android SDK 28–34, Java 17, version catalog, `buildConfig = true`
-- CameraX 1.4.2, AppCompat / Material, view binding, coroutines
-- ML Kit Object Detection 17.0.2 (bundled)
-- LiteRT 1.4.2 InterpreterApi + GPU/NNAPI optional delegates
+- Kotlin, Android SDK 28–34, Java 17
+- CameraX **1.4.2**, AppCompat / Material, view binding, coroutines
+- ML Kit Object Detection 17.0.2 (default)
+- TensorFlow Lite 2.16.1 (optional EfficientDet-Lite0 path)
 - Android `TextToSpeech`
-- JUnit 4 JVM tests (`:app:testDebugUnitTest`)
+- JUnit 4 JVM tests for scorer + tracker
 
 ## Layout
 
-- `app/src/main/java/com/smartglasses/safety/MainActivity.kt` — camera bind, detector selection, UI
-- `.../pipeline/MlKitVehicleDetector.kt` — default detector
-- `.../pipeline/LiteRtVehicleDetector.kt` — optional InterpreterApi path
-- `.../pipeline/VehicleTracker.kt` — SORT IoU + Kalman
-- `DESIGN.md` — tracker algorithm + Bewley et al. citation
-- `app/src/test/java/` — scorer and tracker tests
-- `docs/` — field-validation notes (goals, not measured results)
+- `app/src/main/java/com/smartglasses/safety/MainActivity.kt` — camera bind, permission, overlay
+- `.../pipeline/DetectorFactory.kt` — ML Kit / TFLite / debug-mock selection
+- `.../pipeline/TFLiteVehicleDetector.kt` — Interpreter preprocess / invoke / postprocess
+- `.../pipeline/MlKitVehicleDetector.kt` — bundled STREAM_MODE detector
+- `.../pipeline/VehicleTracker.kt` — IoU + Kalman
+- `.../pipeline/RiskScorer.kt` — profiles and thresholds
+- `models/SOURCE.md` — weights URL, SHA-256, licenses
+- `docs/` — optimization checklist and field-validation notes
 
 ## Build
 
 1. Open the repo root in Android Studio (Hedgehog+ / AGP 8.5).
-2. Let Gradle sync; install SDK 34 if prompted.
-3. `gradle-wrapper.jar` is **not** committed (GitHub MCP would corrupt the binary). CI uses `gradle/actions/setup-gradle` with `gradle-version: 8.7`. Studio generates the jar on first sync.
-4. Deploy to a device or glasses hardware with a back camera.
-5. Grant camera permission.
+2. Let Gradle sync. AGP 8.5 wants **Gradle 8.7**. This repo ships `gradlew`, `gradlew.bat`, and `gradle/wrapper/gradle-wrapper.properties`. It does **not** ship `gradle-wrapper.jar` (binary). Studio generates the jar on first sync; CI uses `gradle/actions/setup-gradle` with `gradle-version: 8.7`.
+3. First `preBuild` tries to download EfficientDet-Lite0 into `app/build/downloaded-assets/`. If that fails, the app still runs on ML Kit.
+4. Deploy to a device or glasses hardware with a back camera. Grant camera permission.
 
 ```bash
-# After Studio has generated gradle-wrapper.jar, or with a local Gradle 8.7:
+chmod +x gradlew   # if git did not preserve the execute bit
 ./gradlew :app:testDebugUnitTest
-./gradlew :app:assembleDebug
+# assembleDebug needs a local Android SDK; it is not run in CI
 ```
 
-CI runs **unit tests only**. `assembleDebug` is not part of Actions because this workflow does not install a full SDK image.
+Flip the mock (debug builds only) by setting `USE_MOCK_DETECTOR` to `true` in `app/build.gradle.kts` `defaultConfig`. Leave it `false` for anything you would demo.
+
+## Tests and CI
+
+`.github/workflows/ci.yml` runs `:app:testDebugUnitTest` on Ubuntu with Temurin 17, Android SDK platform 34, and Gradle 8.7. It does **not** run `assembleDebug` (no full APK image in that job). A green CI means the JVM scorer/tracker tests passed, not that an APK was produced.
 
 MIT license (see `LICENSE`).
