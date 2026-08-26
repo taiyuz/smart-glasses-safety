@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.Log
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -12,16 +13,18 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
+import com.smartglasses.safety.databinding.ActivityMainBinding
 import com.smartglasses.safety.pipeline.AlertLevel
 import com.smartglasses.safety.pipeline.AlertManager
 import com.smartglasses.safety.pipeline.LocalEventLogger
+import com.smartglasses.safety.pipeline.MlKitVehicleDetector
 import com.smartglasses.safety.pipeline.MockVehicleDetector
 import com.smartglasses.safety.pipeline.PerformanceMonitor
 import com.smartglasses.safety.pipeline.RiskProfile
 import com.smartglasses.safety.pipeline.RiskScorer
+import com.smartglasses.safety.pipeline.VehicleDetector
 import com.smartglasses.safety.pipeline.VehicleTracker
 import com.smartglasses.safety.pipeline.toBitmap
-import com.smartglasses.safety.databinding.ActivityMainBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -30,7 +33,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var alertView: TextView
 
-    private val detector = MockVehicleDetector()
+    // Release/default: MlKitVehicleDetector. Mock only when DEBUG && USE_MOCK_DETECTOR.
+    private val detector: VehicleDetector =
+        if (BuildConfig.DEBUG && BuildConfig.USE_MOCK_DETECTOR) {
+            MockVehicleDetector()
+        } else {
+            MlKitVehicleDetector()
+        }
     private val riskScorer = RiskScorer(profile = RiskProfile.BALANCED)
     private lateinit var tracker: VehicleTracker
     private lateinit var alertManager: AlertManager
@@ -51,6 +60,10 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         alertManager = AlertManager(this)
         detector.initialize(this)
+        detector.diagnosticMessage?.let { message ->
+            Log.e(TAG, message)
+            alertView.text = message
+        }
 
         checkCameraPermissionAndStart()
     }
@@ -97,8 +110,10 @@ class MainActivity : AppCompatActivity() {
                 eventLogger.logRisk(risk, perf)
 
                 runOnUiThread {
-                    alertView.text = "${risk.message}\nLatency: ${latency}ms | FPS: %.1f".format(perf.fps)
-                    setAlertColor(risk.level)
+                    val diag = detector.diagnosticMessage
+                    val headline = diag ?: risk.message
+                    alertView.text = "$headline\nLatency: ${latency}ms | FPS: %.1f".format(perf.fps)
+                    setAlertColor(if (diag != null) AlertLevel.WARNING else risk.level)
                 }
 
                 alertManager.announce(risk.message, risk.level)
@@ -126,5 +141,9 @@ class MainActivity : AppCompatActivity() {
         detector.close()
         alertManager.shutdown()
         cameraExecutor.shutdown()
+    }
+
+    companion object {
+        private const val TAG = "SmartGlassesSafety"
     }
 }
