@@ -108,7 +108,7 @@ class VehicleTracker(
 }
 
 /**
- * Independent constant-velocity Kalman filters on (cx, cy, w, h).
+ * Constant-velocity Kalman on (cx, cy, w, h), one 2-state filter per coordinate.
  * Process/measure noise are untuned defaults — not a claimed MOT benchmark.
  */
 internal class BoxKalman(
