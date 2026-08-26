@@ -1,204 +1,169 @@
 package com.smartglasses.safety.pipeline
 
-import kotlin.math.abs
-
 class VehicleTracker(
     private val frameWidth: Float,
     private val historyWindow: Int = 8,
-    private val iouMatchThreshold: Float = 0.3f,
-    private val maxMisses: Int = 5
+    private val maxMisses: Int = 8,
+    private val highIouThreshold: Float = 0.3f,
+    private val lowIouThreshold: Float = 0.1f
 ) {
     private data class History(val area: Float, val centerX: Float, val confidence: Float)
 
-    private data class Track(
+    private class Track(
         val id: Long,
-        val kalman: BoxKalman,
+        val filter: ConstantVelocityBoxFilter,
         val history: ArrayDeque<History>,
-        var misses: Int,
-        var lastBox: RectBox
+        var misses: Int = 0,
+        var lastLabel: String,
+        var lastConfidence: Float
     )
 
-    private val tracks = mutableMapOf<Long, Track>()
+    private val tracks = mutableListOf<Track>()
     private var nextId = 1L
 
     fun track(detections: List<VehicleDetection>): List<TrackedVehicle> {
-        tracks.values.forEach { it.kalman.predict() }
+        tracks.forEach { it.filter.predict() }
 
-        val unmatchedTrackIds = tracks.keys.toMutableSet()
-        val unmatchedDet = detections.indices.toMutableSet()
-        val assignments = LinkedHashMap<Long, Int>()
+        val unmatchedTracks = tracks.toMutableSet()
+        val unmatchedDets = detections.indices.toMutableSet()
+        val assignments = mutableListOf<Pair<Track, Int>>()
 
-        val pairs = ArrayList<Match>(tracks.size * detections.size)
-        for (track in tracks.values) {
-            val predicted = track.kalman.toRectBox()
-            detections.forEachIndexed { index, detection ->
-                val iou = predicted.iou(detection.box)
-                if (iou >= iouMatchThreshold) {
-                    pairs.add(Match(track.id, index, iou))
+        fun associate(minIou: Float) {
+            val pairs = ArrayList<Triple<Float, Track, Int>>()
+            for (track in unmatchedTracks) {
+                val predicted = track.filter.toBox()
+                for (di in unmatchedDets) {
+                    val iou = predicted.iou(detections[di].box)
+                    if (iou >= minIou) pairs += Triple(iou, track, di)
+                }
+            }
+            pairs.sortByDescending { it.first }
+            for ((_, track, di) in pairs) {
+                if (track in unmatchedTracks && di in unmatchedDets) {
+                    unmatchedTracks.remove(track)
+                    unmatchedDets.remove(di)
+                    assignments += track to di
                 }
             }
         }
-        pairs.sortByDescending { it.iou }
-        for (pair in pairs) {
-            if (pair.trackId in unmatchedTrackIds && pair.detIndex in unmatchedDet) {
-                assignments[pair.trackId] = pair.detIndex
-                unmatchedTrackIds.remove(pair.trackId)
-                unmatchedDet.remove(pair.detIndex)
-            }
-        }
 
-        for (trackId in unmatchedTrackIds.toList()) {
-            val track = tracks[trackId] ?: continue
-            track.misses += 1
-            if (track.misses >= maxMisses) {
-                tracks.remove(trackId)
-            }
-        }
+        // BYTE-style two-stage: high-IoU first, then a lower-IoU salvage pass.
+        associate(highIouThreshold)
+        associate(lowIouThreshold)
 
-        val output = ArrayList<TrackedVehicle>(detections.size)
-
-        for ((trackId, detIndex) in assignments) {
-            val track = tracks[trackId] ?: continue
-            val detection = detections[detIndex]
-            track.kalman.update(detection.box)
+        for ((track, di) in assignments) {
+            val det = detections[di]
+            track.filter.update(det.box)
             track.misses = 0
-            track.lastBox = detection.box
-            output.add(toTracked(track, detection))
+            track.lastLabel = det.label
+            track.lastConfidence = det.confidence
+            track.history.addLast(History(det.box.area, det.box.centerX, det.confidence))
+            while (track.history.size > historyWindow) track.history.removeFirst()
         }
 
-        for (detIndex in unmatchedDet) {
-            val detection = detections[detIndex]
-            val id = nextId++
-            val track = Track(
-                id = id,
-                kalman = BoxKalman.from(detection.box),
-                history = ArrayDeque(),
-                misses = 0,
-                lastBox = detection.box
+        for (di in unmatchedDets) {
+            val det = detections[di]
+            val filter = ConstantVelocityBoxFilter().also { it.initFrom(det.box) }
+            val history = ArrayDeque<History>()
+            history.addLast(History(det.box.area, det.box.centerX, det.confidence))
+            tracks += Track(
+                id = nextId++,
+                filter = filter,
+                history = history,
+                lastLabel = det.label,
+                lastConfidence = det.confidence
             )
-            tracks[id] = track
-            output.add(toTracked(track, detection))
         }
 
-        return output
+        unmatchedTracks.forEach { it.misses += 1 }
+        tracks.removeAll { it.misses >= maxMisses }
+
+        return tracks.map { it.toTrackedVehicle() }
     }
 
-    private fun toTracked(track: Track, detection: VehicleDetection): TrackedVehicle {
-        val history = track.history
-        history.addLast(History(detection.box.area, detection.box.centerX, detection.confidence))
-        while (history.size > historyWindow) history.removeFirst()
-
+    private fun Track.toTrackedVehicle(): TrackedVehicle {
+        val box = filter.toBox()
+        val detection = VehicleDetection(lastLabel, lastConfidence, box)
         val first = history.first()
         val last = history.last()
         val areaGrowth = if (first.area <= 0f) 0f else (last.area - first.area) / first.area
-        val halfWidth = (frameWidth / 2f).coerceAtLeast(1f)
-        val centerDriftToMiddle = abs(halfWidth - last.centerX) / halfWidth
-        val confidencePersistence = history.count { it.confidence >= 0.5f }.toFloat() / history.size
-
+        val half = (frameWidth / 2f).coerceAtLeast(1f)
+        val centerDriftToMiddle = kotlin.math.abs(half - last.centerX) / half
+        val confidencePersistence =
+            history.count { it.confidence >= 0.5f }.toFloat() / history.size.coerceAtLeast(1)
         return TrackedVehicle(
-            id = track.id,
+            id = id,
             detection = detection,
             areaGrowth = areaGrowth.coerceIn(-1f, 3f),
             centerDriftToMiddle = centerDriftToMiddle.coerceIn(0f, 1f),
             confidencePersistence = confidencePersistence
         )
     }
-
-    private data class Match(val trackId: Long, val detIndex: Int, val iou: Float)
 }
 
 /**
- * Constant-velocity Kalman on (cx, cy, w, h), one 2-state filter per coordinate.
- * Process/measure noise are untuned defaults — not a claimed MOT benchmark.
+ * Diagonal-covariance constant-velocity Kalman on (cx, cy, w, h) with vx, vy.
+ * No matrix library; process/measurement noise are scalars on the diagonal.
  */
-internal class BoxKalman(
-    cx: Float,
-    cy: Float,
-    w: Float,
-    h: Float
-) {
-    private val cxFilter = ScalarCvKalman(cx)
-    private val cyFilter = ScalarCvKalman(cy)
-    private val wFilter = ScalarCvKalman(w)
-    private val hFilter = ScalarCvKalman(h)
+internal class ConstantVelocityBoxFilter {
+    private val x = FloatArray(6)
+    private val pDiag = FloatArray(6) { 10f }
+
+    fun initFrom(box: RectBox) {
+        x[0] = box.centerX
+        x[1] = box.centerY
+        x[2] = maxOf(box.width, 1f)
+        x[3] = maxOf(box.height, 1f)
+        x[4] = 0f
+        x[5] = 0f
+        pDiag[0] = 10f
+        pDiag[1] = 10f
+        pDiag[2] = 10f
+        pDiag[3] = 10f
+        pDiag[4] = 50f
+        pDiag[5] = 50f
+    }
 
     fun predict() {
-        cxFilter.predict()
-        cyFilter.predict()
-        wFilter.predict()
-        hFilter.predict()
+        x[0] += x[4]
+        x[1] += x[5]
+        pDiag[0] += 1f + pDiag[4] * 0.05f
+        pDiag[1] += 1f + pDiag[5] * 0.05f
+        pDiag[2] += 1f
+        pDiag[3] += 1f
+        pDiag[4] += 2f
+        pDiag[5] += 2f
     }
 
     fun update(box: RectBox) {
-        cxFilter.update(box.centerX)
-        cyFilter.update(box.centerY)
-        wFilter.update(box.width.coerceAtLeast(1f))
-        hFilter.update(box.height.coerceAtLeast(1f))
-    }
-
-    fun toRectBox(): RectBox {
-        val w = wFilter.x.coerceAtLeast(1f)
-        val h = hFilter.x.coerceAtLeast(1f)
-        val cx = cxFilter.x
-        val cy = cyFilter.x
-        return RectBox(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f)
-    }
-
-    companion object {
-        fun from(box: RectBox): BoxKalman {
-            return BoxKalman(
-                cx = box.centerX,
-                cy = box.centerY,
-                w = box.width.coerceAtLeast(1f),
-                h = box.height.coerceAtLeast(1f)
-            )
+        val meas = floatArrayOf(
+            box.centerX,
+            box.centerY,
+            maxOf(box.width, 1f),
+            maxOf(box.height, 1f)
+        )
+        val r = 4f
+        val prevCx = x[0]
+        val prevCy = x[1]
+        for (i in 0..3) {
+            val k = pDiag[i] / (pDiag[i] + r)
+            x[i] = x[i] + k * (meas[i] - x[i])
+            pDiag[i] = (1f - k) * pDiag[i]
         }
-    }
-}
-
-internal class ScalarCvKalman(
-    initialPosition: Float,
-    private val processNoisePos: Float = 1f,
-    private val processNoiseVel: Float = 1f,
-    private val measureNoise: Float = 10f
-) {
-    var x = initialPosition
-        private set
-    var v = 0f
-        private set
-
-    private var p00 = 10f
-    private var p01 = 0f
-    private var p10 = 0f
-    private var p11 = 10f
-
-    fun predict(dt: Float = 1f) {
-        x += v * dt
-        val n00 = p00 + dt * (p10 + p01) + dt * dt * p11 + processNoisePos
-        val n01 = p01 + dt * p11
-        val n10 = p10 + dt * p11
-        val n11 = p11 + processNoiseVel
-        p00 = n00
-        p01 = n01
-        p10 = n10
-        p11 = n11
+        val dvx = x[0] - prevCx
+        val dvy = x[1] - prevCy
+        val kv = pDiag[4] / (pDiag[4] + 8f)
+        x[4] = x[4] + kv * (dvx - x[4])
+        x[5] = x[5] + kv * (dvy - x[5])
+        pDiag[4] = (1f - kv) * pDiag[4]
+        pDiag[5] = (1f - kv) * pDiag[5]
     }
 
-    fun update(measurement: Float) {
-        val y = measurement - x
-        val s = p00 + measureNoise
-        if (s <= 0f) return
-        val k0 = p00 / s
-        val k1 = p10 / s
-        x += k0 * y
-        v += k1 * y
-        val np00 = (1f - k0) * p00
-        val np01 = (1f - k0) * p01
-        val np10 = p10 - k1 * p00
-        val np11 = p11 - k1 * p01
-        p00 = np00
-        p01 = np01
-        p10 = np10
-        p11 = np11
+    fun toBox(): RectBox {
+        val w = maxOf(x[2], 1f)
+        val h = maxOf(x[3], 1f)
+        val cx = x[0]
+        val cy = x[1]
+        return RectBox(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f)
     }
 }
