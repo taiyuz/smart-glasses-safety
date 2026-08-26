@@ -11,60 +11,68 @@ import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import java.util.concurrent.TimeUnit
 
 /**
- * Default on-device detector using bundled ML Kit Object Detection
- * (`com.google.mlkit:object-detection`). No Play Services model download.
+ * Bundled ML Kit object detector. No weights file required.
  *
- * Bundled coarse classes are fashion/food/home/place/plant, not vehicles,
- * so classification is off. Boxes are generic object candidates, not ADAS.
+ * STREAM_MODE is built for video; classification labels are coarse
+ * (fashion/food/home/place/plant), not COCO vehicles. Used as the
+ * first-run default so Studio users get a real detector without a .tflite.
  */
-class MlKitVehicleDetector(
-    private val inferTimeoutMs: Long = 400L
-) : VehicleDetector {
-    private var detector: ObjectDetector? = null
+class MlKitVehicleDetector : VehicleDetector {
+    private var client: ObjectDetector? = null
+
+    override val backendName: String = "ML Kit Object Detection"
+    override var isReady: Boolean = false
+        private set
+    override var statusMessage: String = "ML Kit not initialized"
+        private set
 
     override fun initialize(context: Context) {
         val options = ObjectDetectorOptions.Builder()
             .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
             .enableMultipleObjects()
+            .enableClassification()
             .build()
-        detector = ObjectDetection.getClient(options)
-        Log.i(TAG, "ML Kit Object Detector ready (bundled, STREAM_MODE)")
+        client = ObjectDetection.getClient(options)
+        isReady = true
+        statusMessage =
+            "ML Kit bundled object detector (STREAM_MODE). " +
+                "Coarse labels, not COCO vehicle classes."
+        Log.i(TAG, statusMessage)
     }
 
     override fun detect(frame: Bitmap): List<VehicleDetection> {
-        val client = detector ?: return emptyList()
+        val detector = client ?: return emptyList()
+        if (!isReady) return emptyList()
         return try {
             val image = InputImage.fromBitmap(frame, 0)
-            val results = Tasks.await(client.process(image), inferTimeoutMs, TimeUnit.MILLISECONDS)
-            results.mapNotNull { obj ->
+            val results = Tasks.await(detector.process(image), 250, TimeUnit.MILLISECONDS)
+            results.map { obj ->
                 val box = obj.boundingBox
-                if (box.width() <= 0 || box.height() <= 0) return@mapNotNull null
-                val label = obj.labels.maxByOrNull { it.confidence }
+                val best = obj.labels.maxByOrNull { it.confidence }
                 VehicleDetection(
-                    label = label?.text ?: CANDIDATE_LABEL,
-                    confidence = label?.confidence ?: DEFAULT_CANDIDATE_CONFIDENCE,
+                    label = best?.text?.takeIf { it.isNotBlank() } ?: "object",
+                    confidence = best?.confidence ?: 0.5f,
                     box = RectBox(
-                        left = box.left.toFloat(),
-                        top = box.top.toFloat(),
-                        right = box.right.toFloat(),
-                        bottom = box.bottom.toFloat()
+                        left = box.left.toFloat().coerceAtLeast(0f),
+                        top = box.top.toFloat().coerceAtLeast(0f),
+                        right = box.right.toFloat().coerceAtMost(frame.width.toFloat()),
+                        bottom = box.bottom.toFloat().coerceAtMost(frame.height.toFloat())
                     )
                 )
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "ML Kit detect failed; emitting no boxes", t)
+        } catch (e: Exception) {
+            Log.e(TAG, "ML Kit detect failed", e)
             emptyList()
         }
     }
 
     override fun close() {
-        detector?.close()
-        detector = null
+        client?.close()
+        client = null
+        isReady = false
     }
 
     companion object {
-        private const val TAG = "MlKitVehicleDetector"
-        private const val CANDIDATE_LABEL = "object"
-        private const val DEFAULT_CANDIDATE_CONFIDENCE = 0.5f
+        private const val TAG = "SmartGlassesSafety"
     }
 }

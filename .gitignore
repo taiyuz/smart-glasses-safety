@@ -16,3 +16,6 @@ captures/
 # OS files
 .DS_Store
 Thumbs.db
+
+# TFLite weights (downloaded by Gradle into build/, never commit binaries)
+*.tflite
