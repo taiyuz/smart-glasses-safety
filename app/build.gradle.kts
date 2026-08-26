@@ -15,9 +15,6 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        // Mock detector is opt-in: BuildConfig.DEBUG && USE_MOCK_DETECTOR.
-        // Release/default always constructs MlKitVehicleDetector.
         buildConfigField("boolean", "USE_MOCK_DETECTOR", "false")
     }
 
@@ -47,7 +44,7 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
-    implementation(libs.material)
+    implementation(libs.google.material)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
@@ -58,12 +55,9 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
-    // Bundled ML Kit Object Detection model (in-APK, no Play download at runtime).
-    implementation(libs.mlkit.object.detection)
-
-    // Optional TFLite path; no trained weights are shipped in this repo.
     implementation(libs.tensorflow.lite)
     implementation(libs.tensorflow.lite.support)
+    implementation(libs.mlkit.object.detection)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
