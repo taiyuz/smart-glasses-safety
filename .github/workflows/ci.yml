@@ -7,16 +7,26 @@ on:
 
 # JVM unit tests for scorer/tracker. assembleDebug is not run here: it needs a
 # full Android SDK image and is left to local Android Studio.
+# gradle-wrapper.jar is not committed; CI uses the Gradle 8.7 distribution from
+# setup-gradle instead of ./gradlew.
 jobs:
   unit-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "12266719"
+          packages: "platform-tools platforms;android-34 build-tools;34.0.0"
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
+      - name: Install compileSdk 34 packages
+        run: sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
