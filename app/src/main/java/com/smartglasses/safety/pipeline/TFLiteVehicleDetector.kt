@@ -6,7 +6,6 @@ import android.util.Log
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -17,7 +16,8 @@ import java.nio.ByteOrder
  * input/output signature is wired — it never emits mock boxes. Prefer [MlKitVehicleDetector]
  * as the runtime default.
  *
- * Accelerator order is real, not a comment: try GPU (CompatibilityList), then NNAPI, then CPU.
+ * Accelerator order is real, not a comment: try GPU (CompatibilityList), then CPU.
+ * LiteRT 1.4.2 does not ship [org.tensorflow.lite.nnapi.NnApiDelegate], so NNAPI is not used.
  * Whichever binds is logged. A failed delegate is closed and skipped.
  */
 class TFLiteVehicleDetector(
@@ -25,7 +25,6 @@ class TFLiteVehicleDetector(
 ) : VehicleDetector {
     private var interpreter: Interpreter? = null
     private var gpuDelegate: GpuDelegate? = null
-    private var nnapiDelegate: NnApiDelegate? = null
     @Volatile private var initError: String? = null
     @Volatile var boundAccelerator: String = "none"
         private set
@@ -43,12 +42,12 @@ class TFLiteVehicleDetector(
         }
 
         val options = Interpreter.Options()
-        if (tryGpu(options) || tryNnapi(options)) {
+        if (tryGpu(options)) {
             options.setNumThreads(1)
         } else {
             boundAccelerator = "CPU"
             options.setNumThreads(2)
-            Log.i(TAG, "LiteRT using CPU (GPU and NNAPI unavailable)")
+            Log.i(TAG, "LiteRT using CPU (GPU unavailable)")
         }
 
         try {
@@ -96,21 +95,6 @@ class TFLiteVehicleDetector(
         }
     }
 
-    private fun tryNnapi(options: Interpreter.Options): Boolean {
-        return try {
-            val delegate = NnApiDelegate()
-            options.addDelegate(delegate)
-            nnapiDelegate = delegate
-            boundAccelerator = "NNAPI"
-            Log.i(TAG, "LiteRT NNAPI delegate bound")
-            true
-        } catch (t: Throwable) {
-            Log.w(TAG, "LiteRT NNAPI delegate skipped", t)
-            closeNnapi()
-            false
-        }
-    }
-
     private fun fail(message: String, t: Throwable) {
         interpreter = null
         initError = message
@@ -120,7 +104,6 @@ class TFLiteVehicleDetector(
 
     private fun closeDelegates() {
         closeGpu()
-        closeNnapi()
     }
 
     private fun closeGpu() {
@@ -130,15 +113,6 @@ class TFLiteVehicleDetector(
             Log.w(TAG, "GPU delegate close failed", t)
         }
         gpuDelegate = null
-    }
-
-    private fun closeNnapi() {
-        try {
-            nnapiDelegate?.close()
-        } catch (t: Throwable) {
-            Log.w(TAG, "NNAPI delegate close failed", t)
-        }
-        nnapiDelegate = null
     }
 
     companion object {
