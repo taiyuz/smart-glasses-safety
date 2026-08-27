@@ -59,7 +59,7 @@ dependencies {
     implementation(libs.androidx.camera.view)
 
     // Bundled ML Kit Object Detection model (in-APK, no Play download at runtime).
-    implementation(libs.mlkit.object.detection)
+    implementation(libs.mlkit.objectdetection)
 
     // Optional LiteRT path. GPU then NNAPI then CPU; no trained weights are shipped.
     implementation(libs.litert)
