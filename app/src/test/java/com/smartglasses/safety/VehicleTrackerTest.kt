@@ -98,9 +98,11 @@ class VehicleTrackerTest {
     @Test
     fun areaGrowthIsPositiveWhenBoxGetsLarger() {
         val tracker = VehicleTracker(frameWidth = 200f)
-        tracker.track(listOf(detection(box(20f, 20f, 40f, 40f))))
-        val grown = tracker.track(listOf(detection(box(10f, 10f, 50f, 50f))))
+        val first = tracker.track(listOf(detection(box(10f, 10f, 50f, 50f))))
+        // IoU stays ~0.76 so this is the same track, not a new id with empty history.
+        val grown = tracker.track(listOf(detection(box(8f, 8f, 54f, 54f))))
         assertEquals(1, grown.size)
+        assertEquals(first[0].id, grown[0].id)
         assertTrue(grown[0].areaGrowth > 0f)
     }
 
