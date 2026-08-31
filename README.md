@@ -1,12 +1,14 @@
 # Smart glasses vehicle-alert MVP
 
-Android/Kotlin on-device pipeline: camera frames → detections → short-horizon tracks → risk score → overlay + spoken alerts.
+[![CI](https://github.com/taiyuz/smart-glasses-safety/actions/workflows/ci.yml/badge.svg)](https://github.com/taiyuz/smart-glasses-safety/actions/workflows/ci.yml)
+
+On-device Android/Kotlin pipeline: **CameraX frames → ML Kit object detection → IoU + Kalman tracks → risk score → overlay + spoken TTS**. Inference stays on the phone — no cloud API, no video upload, no Play-services model download for the default detector.
 
 Wearable-safety prototype (crossing / approach warnings). **Not production ADAS.** Useful as a systems interview artifact: camera backpressure, on-device detection, and alert UX under a thermal/power budget.
 
 ## What is real vs not
 
-**Real**
+**Runs on-device (default debug and release)**
 
 - CameraX preview + `ImageAnalysis` with `STRATEGY_KEEP_ONLY_LATEST` (drop stale frames instead of queuing them).
 - Default detector: bundled ML Kit Object Detection (`MlKitVehicleDetector`, `STREAM_MODE`, multiple objects). The model is in the APK (`com.google.mlkit:object-detection:17.0.2`); no Play download at runtime.
@@ -14,7 +16,7 @@ Wearable-safety prototype (crossing / approach warnings). **Not production ADAS.
 - Risk scorer (`CONSERVATIVE` / `BALANCED` / `SENSITIVE`), TTS debounce, latency/FPS overlay, local event log.
 - Optional LiteRT path (`TFLiteVehicleDetector`): tries GPU (`CompatibilityList` + `GpuDelegate`), then NNAPI, then CPU, and logs which bound. **No trained weights are in this repo**, so this path still returns no boxes. It does not silently mock.
 
-**Mock / optional**
+**Mock / debug-only (not the default)**
 
 - `MockVehicleDetector` (centered fake "car" box) only if `BuildConfig.DEBUG && USE_MOCK_DETECTOR`. That flag defaults to `false`. Release always constructs `MlKitVehicleDetector`.
 
@@ -52,7 +54,7 @@ GPU/NNAPI on the LiteRT path is the same idea: only enable a delegate if it actu
 - CameraX 1.4.2, AppCompat / Material, view binding, coroutines
 - ML Kit Object Detection 17.0.2 (bundled)
 - LiteRT 1.4.2 + GPU artifacts (optional adapter; Interpreter API + delegates)
-- Gradle version catalog (`gradle/libs.versions.toml`)
+- Gradle version catalog (`gradle/libs.versions.toml`; ML Kit alias is `mlkit-objectdetection` so the Kotlin DSL does not hit the `object` keyword)
 
 ## Layout
 
@@ -66,21 +68,30 @@ GPU/NNAPI on the LiteRT path is the same idea: only enable a delegate if it actu
 - `docs/` — field-validation notes
 - `.github/workflows/ci.yml` — JVM unit tests (`:app:testDebugUnitTest`)
 
-## Build
+## JVM unit tests
+
+CI on `main` runs the tracker and risk-scorer tests (no emulator, no `assembleDebug`). From the repo root, with JDK 17 and Android SDK 34 (Android Studio sync is enough):
+
+```bash
+./gradlew :app:testDebugUnitTest
+```
+
+`gradle/wrapper/gradle-wrapper.properties` pins Gradle 8.7. This snapshot does **not** include `gradle-wrapper.jar` (binary); Android Studio generates it on first sync. GitHub Actions uses `gradle/actions/setup-gradle` at that same version and invokes `gradle :app:testDebugUnitTest` — it does **not** run `./gradlew` or `assembleDebug` (assemble needs a full SDK image).
+
+If the wrapper jar is already on disk (after an Android Studio sync):
+
+```bash
+./gradlew :app:assembleDebug
+```
+
+`USE_MOCK_DETECTOR` stays `false` unless you flip the `buildConfigField` in `app/build.gradle.kts`.
+
+## Build (device)
 
 1. Open the repo root in Android Studio (Hedgehog+).
 2. Let Gradle sync; install SDK 34 if prompted.
 3. Deploy to a device with a back camera (or glasses hardware).
 4. Grant camera permission.
-
-```bash
-./gradlew :app:assembleDebug   # if the Gradle wrapper jar is present locally
-./gradlew :app:testDebugUnitTest
-```
-
-`gradle/wrapper/gradle-wrapper.properties` pins Gradle 8.7. This snapshot does not include `gradle-wrapper.jar` (binary). Android Studio generates the rest of the wrapper on first sync. CI uses `gradle/actions/setup-gradle` with that same version and does **not** run `assembleDebug` (needs a full SDK image).
-
-`USE_MOCK_DETECTOR` stays `false` unless you flip the `buildConfigField` in `app/build.gradle.kts`.
 
 ## On-device constraints
 
