@@ -30,6 +30,7 @@ class RiskScorerTest {
         val result = RiskScorer(RiskProfile.BALANCED).score(emptyList())
         assertEquals(AlertLevel.IDLE, result.level)
         assertEquals(0f, result.score, 0.0001f)
+        assertEquals("No approaching vehicles detected", result.message)
     }
 
     @Test
@@ -114,5 +115,49 @@ class RiskScorerTest {
         )
         assertEquals(0f, result.score, 0.0001f)
         assertEquals(AlertLevel.IDLE, result.level)
+        assertEquals("Monitoring for approaching vehicles...", result.message)
+    }
+
+    @Test
+    fun balancedWeightedFormula() {
+        // growth 0.4 * 0.5 + centerThreat 0.5 * 0.3 + conf 1.0 * 0.2 = 0.55
+        val result = RiskScorer(RiskProfile.BALANCED).score(
+            listOf(
+                vehicle(
+                    areaGrowth = 0.4f,
+                    centerDriftToMiddle = 0.5f,
+                    confidencePersistence = 1f
+                )
+            )
+        )
+        assertEquals(0.55f, result.score, 0.0001f)
+        assertEquals(AlertLevel.ADVISORY, result.level)
+        assertEquals("Advisory: Vehicle nearby. Stay alert.", result.message)
+    }
+
+    @Test
+    fun sensitiveMapsTheSameInputsToWarning() {
+        val result = RiskScorer(RiskProfile.SENSITIVE).score(
+            listOf(
+                vehicle(
+                    areaGrowth = 0.4f,
+                    centerDriftToMiddle = 0.5f,
+                    confidencePersistence = 1f
+                )
+            )
+        )
+        // 0.4*0.45 + 0.5*0.35 + 1.0*0.2 = 0.555
+        assertEquals(0.555f, result.score, 0.0001f)
+        assertEquals(AlertLevel.WARNING, result.level)
+        assertEquals("Warning: Vehicle approaching. Wait before crossing.", result.message)
+    }
+
+    @Test
+    fun criticalMessageMatchesLevel() {
+        val result = RiskScorer(RiskProfile.BALANCED).score(
+            listOf(vehicle(areaGrowth = 1.2f, centerDriftToMiddle = 0.05f))
+        )
+        assertEquals(AlertLevel.CRITICAL, result.level)
+        assertEquals("Critical: Vehicle approaching fast. Stop and verify.", result.message)
     }
 }
