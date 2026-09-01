@@ -17,14 +17,13 @@ import androidx.core.content.ContextCompat
 import com.smartglasses.safety.databinding.ActivityMainBinding
 import com.smartglasses.safety.pipeline.AlertLevel
 import com.smartglasses.safety.pipeline.AlertManager
+import com.smartglasses.safety.pipeline.AnalysisPipeline
 import com.smartglasses.safety.pipeline.LocalEventLogger
 import com.smartglasses.safety.pipeline.MlKitVehicleDetector
 import com.smartglasses.safety.pipeline.MockVehicleDetector
 import com.smartglasses.safety.pipeline.PerformanceMonitor
 import com.smartglasses.safety.pipeline.RiskProfile
-import com.smartglasses.safety.pipeline.RiskScorer
 import com.smartglasses.safety.pipeline.VehicleDetector
-import com.smartglasses.safety.pipeline.VehicleTracker
 import com.smartglasses.safety.pipeline.toBitmap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -41,8 +40,7 @@ class MainActivity : AppCompatActivity() {
         } else {
             MlKitVehicleDetector()
         }
-    private val riskScorer = RiskScorer(profile = RiskProfile.BALANCED)
-    private lateinit var tracker: VehicleTracker
+    private val pipeline = AnalysisPipeline(profile = RiskProfile.BALANCED)
     private lateinit var alertManager: AlertManager
     private val performanceMonitor = PerformanceMonitor()
     private val eventLogger = LocalEventLogger()
@@ -90,18 +88,20 @@ class MainActivity : AppCompatActivity() {
                 .setTargetResolution(Size(640, 480))
                 .build()
 
+            // New camera session: drop Kalman state from a previous bind.
+            pipeline.reset()
+
             analyzer.setAnalyzer(cameraExecutor) { imageProxy ->
                 val startedAt = SystemClock.elapsedRealtime()
                 try {
                     val bitmap = imageProxy.toBitmap() ?: return@setAnalyzer
 
-                    if (!::tracker.isInitialized) {
-                        tracker = VehicleTracker(frameWidth = bitmap.width.toFloat())
-                    }
-
-                    val detections = detector.detect(bitmap)
-                    val tracked = tracker.track(detections)
-                    val risk = riskScorer.score(tracked)
+                    val frame = pipeline.process(
+                        frameWidth = bitmap.width.toFloat(),
+                        detections = detector.detect(bitmap),
+                        nowMs = startedAt
+                    )
+                    val risk = frame.risk
 
                     val latency = SystemClock.elapsedRealtime() - startedAt
                     performanceMonitor.markFrame(latency)
@@ -125,6 +125,13 @@ class MainActivity : AppCompatActivity() {
             cameraProvider.unbindAll()
             cameraProvider.bindToLifecycle(this, cameraSelector, preview, analyzer)
         }, ContextCompat.getMainExecutor(this))
+    }
+
+    override fun onStop() {
+        // CameraX unbinds analysis here. Clear tracks so a later resume does not
+        // associate against velocity from the previous scene.
+        pipeline.reset()
+        super.onStop()
     }
 
     private fun setAlertColor(level: AlertLevel) {
