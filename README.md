@@ -13,6 +13,7 @@ Wearable-safety prototype (crossing / approach warnings). **Not production ADAS.
 - CameraX preview + `ImageAnalysis` with `STRATEGY_KEEP_ONLY_LATEST` (drop stale frames instead of queuing them).
 - Default detector: bundled ML Kit Object Detection (`MlKitVehicleDetector`, `STREAM_MODE`, multiple objects). The model is in the APK (`com.google.mlkit:object-detection:17.0.2`); no Play download at runtime.
 - Tracker: greedy IoU association plus independent constant-velocity Kalman filters on `(cx, cy, w, h)`. Tracks expire after missed frames. Same `TrackedVehicle` fields the scorer already uses (`areaGrowth`, `centerDriftToMiddle`, `confidencePersistence`). Write-up: [DESIGN.md](DESIGN.md) (Bewley et al., ICIP 2016; greedy IoU, not Hungarian, not ByteTrack).
+- `AnalysisPipeline` owns tracker + scorer for one camera session and **resets** them on `onStop`, camera rebind, resolution change, or a >2s gap between processed frames. That drops Kalman velocity from a previous scene; it is not ByteTrack.
 - Risk scorer (`CONSERVATIVE` / `BALANCED` / `SENSITIVE`), TTS debounce, latency/FPS overlay, local event log.
 - Optional LiteRT path (`TFLiteVehicleDetector`): tries GPU (`CompatibilityList` + `GpuDelegate`), then NNAPI, then CPU, and logs which bound. **No trained weights are in this repo**, so this path still returns no boxes. It does not silently mock.
 
@@ -26,19 +27,19 @@ Wearable-safety prototype (crossing / approach warnings). **Not production ADAS.
 - Kalman process/measure noise are untuned defaults, not a MOT benchmark and not ByteTrack.
 - Overlay latency/FPS are whatever that phone reports at runtime. This README does not claim a measured mAP or millisecond budget.
 - LiteRT GPU/NNAPI is a bind-or-skip fallback, not a claimed speedup.
+- `gradle-wrapper.jar` is not in git. CI does not run `./gradlew` and does not `assembleDebug`.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
   cam[CameraX ImageAnalysis] --> det[VehicleDetector]
-  det --> tr[VehicleTracker]
-  tr --> risk[RiskScorer]
-  risk --> ui[overlay plus TTS]
-  risk --> log[LocalEventLogger]
+  det --> pipe[AnalysisPipeline]
+  pipe --> ui[overlay plus TTS]
+  pipe --> log[LocalEventLogger]
 ```
 
-`MainActivity` binds the back camera and a single-thread analyzer. Each frame: YUV → bitmap → `detect` → `track` → `score` → overlay + `AlertManager`. `ImageProxy` is closed on every path so the camera does not stall.
+`MainActivity` binds the back camera and a single-thread analyzer. Each frame: YUV → bitmap → `detect` → `AnalysisPipeline.process` (track + score) → overlay + `AlertManager`. `ImageProxy` is closed on every path so the camera does not stall. `onStop` and a new camera bind call `pipeline.reset()`.
 
 Risk levels: idle / advisory / warning / critical.
 
@@ -58,7 +59,8 @@ GPU/NNAPI on the LiteRT path is the same idea: only enable a delegate if it actu
 
 ## Layout
 
-- `app/src/main/java/com/smartglasses/safety/MainActivity.kt` — camera bind, permission, detector choice
+- `app/src/main/java/com/smartglasses/safety/MainActivity.kt` — camera bind, permission, detector choice, pipeline reset on stop/rebind
+- `.../pipeline/AnalysisPipeline.kt` — session-scoped tracker + scorer, pause/gap reset
 - `.../pipeline/MlKitVehicleDetector.kt` — default on-device detector
 - `.../pipeline/VehicleTracker.kt` — IoU + Kalman
 - `.../pipeline/RiskScorer.kt` — weighted approach score
@@ -70,13 +72,13 @@ GPU/NNAPI on the LiteRT path is the same idea: only enable a delegate if it actu
 
 ## JVM unit tests
 
-CI on `main` runs the tracker and risk-scorer tests (no emulator, no `assembleDebug`). From the repo root, with JDK 17 and Android SDK 34 (Android Studio sync is enough):
+CI on `main` runs the tracker, scorer, and pipeline tests (no emulator, no `assembleDebug`). From the repo root, with JDK 17 and Android SDK 34 (Android Studio sync is enough):
 
 ```bash
 ./gradlew :app:testDebugUnitTest
 ```
 
-`gradle/wrapper/gradle-wrapper.properties` pins Gradle 8.7. This snapshot does **not** include `gradle-wrapper.jar` (binary); Android Studio generates it on first sync. GitHub Actions uses `gradle/actions/setup-gradle` at that same version and invokes `gradle :app:testDebugUnitTest` — it does **not** run `./gradlew` or `assembleDebug` (assemble needs a full SDK image).
+`gradle/wrapper/gradle-wrapper.properties` pins Gradle 8.7. This snapshot does **not** include `gradle-wrapper.jar` (binary); Android Studio generates it on first sync. Do not commit a placeholder jar. GitHub Actions uses `gradle/actions/setup-gradle` at that same version and invokes `gradle :app:testDebugUnitTest` — it does **not** run `./gradlew` or `assembleDebug` (assemble needs a full SDK image).
 
 If the wrapper jar is already on disk (after an Android Studio sync):
 
@@ -89,7 +91,7 @@ If the wrapper jar is already on disk (after an Android Studio sync):
 ## Build (device)
 
 1. Open the repo root in Android Studio (Hedgehog+).
-2. Let Gradle sync; install SDK 34 if prompted.
+2. Let Gradle sync; it creates `gradle/wrapper/gradle-wrapper.jar` locally if missing.
 3. Deploy to a device with a back camera (or glasses hardware).
 4. Grant camera permission.
 

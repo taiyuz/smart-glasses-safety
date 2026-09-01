@@ -21,6 +21,12 @@ ByteTrack (Zhang et al., 2022) keeps low-score detections for a second associati
 
 What we actually need from tracking is a stable id across ~8 frames so `areaGrowth` is a real number instead of frame-to-frame jitter. Greedy IoU after a cheap Kalman predict is enough for that, and it runs on the analyzer thread next to ML Kit. Hungarian assignment, appearance ReID, and ByteTrack's low-score pass are the right next step **after** a vehicle-class model lands on the LiteRT path — not before. JVM tests in `VehicleTrackerTest` pin the greedy one-to-one rule, the IoU gate, and miss expiry; they are not a MOTA/HOTA claim.
 
+## Camera session reset
+
+`bindToLifecycle` pauses `ImageAnalysis` when the activity is not started. While paused, no frames reach `VehicleTracker`, so miss counters stay at zero and the Kalman velocity from the last street is still in memory. `AnalysisPipeline` discards that tracker when `MainActivity.onStop` runs, when the camera is rebound, if the analysis resolution changes, or if two processed frames are more than two seconds apart (a stalled session, not a slow but live stream). The next frame starts ids at 1 again.
+
+This is lifecycle hygiene so a resume does not associate against a previous scene. It is **not** ByteTrack, not ReID, and not a second association pass on low-score detections.
+
 ## Citation (matches this code)
 
 Alex Bewley, Zongyuan Ge, Lionel Ott, Fabio Ramos, and Ben Upcroft. Simple Online and Realtime Tracking. *IEEE International Conference on Image Processing (ICIP)*, 2016. https://arxiv.org/abs/1602.00763
