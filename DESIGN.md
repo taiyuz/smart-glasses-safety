@@ -27,6 +27,12 @@ What we actually need from tracking is a stable id across ~8 frames so `areaGrow
 
 This is lifecycle hygiene so a resume does not associate against a previous scene. It is **not** ByteTrack, not ReID, and not a second association pass on low-score detections.
 
+## Risk hysteresis
+
+`RiskScorer` remembers the last emitted `AlertLevel`. Entering a level still uses the profile enter thresholds (`advisory` / `warning` / `critical`). Leaving a level requires the score to fall below enter − `0.08` (clamped so an exit stays at or above the next-lower enter). Upgrades are immediate; an empty detection list clears to IDLE. `AnalysisPipeline` calls `RiskScorer.reset()` on the same camera-session boundaries that discard the tracker, so a held WARNING from one street cannot suppress IDLE/ADVISORY on the next.
+
+This is alert UX smoothing against `areaGrowth` jitter around a cut-off. It is **not** a time-to-cross estimate, not ByteTrack, and not a claim about on-device latency.
+
 ## Citation (matches this code)
 
 Alex Bewley, Zongyuan Ge, Lionel Ott, Fabio Ramos, and Ben Upcroft. Simple Online and Realtime Tracking. *IEEE International Conference on Image Processing (ICIP)*, 2016. https://arxiv.org/abs/1602.00763

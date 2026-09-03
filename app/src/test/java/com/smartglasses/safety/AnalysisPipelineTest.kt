@@ -3,6 +3,9 @@ package com.smartglasses.safety
 import com.smartglasses.safety.pipeline.AlertLevel
 import com.smartglasses.safety.pipeline.AnalysisPipeline
 import com.smartglasses.safety.pipeline.RectBox
+import com.smartglasses.safety.pipeline.RiskProfile
+import com.smartglasses.safety.pipeline.RiskScorer
+import com.smartglasses.safety.pipeline.TrackedVehicle
 import com.smartglasses.safety.pipeline.VehicleDetection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -16,6 +19,18 @@ class AnalysisPipelineTest {
     private fun nearBox() = RectBox(10f, 10f, 50f, 50f)
 
     private fun farBox() = RectBox(200f, 200f, 240f, 240f)
+
+    private fun tracked(
+        areaGrowth: Float,
+        centerDriftToMiddle: Float,
+        confidencePersistence: Float
+    ) = TrackedVehicle(
+        id = 1L,
+        detection = VehicleDetection("car", 0.95f, RectBox(100f, 50f, 250f, 300f)),
+        areaGrowth = areaGrowth,
+        centerDriftToMiddle = centerDriftToMiddle,
+        confidencePersistence = confidencePersistence
+    )
 
     @Test
     fun firstFrameResetsTracker() {
@@ -101,5 +116,48 @@ class AnalysisPipelineTest {
         assertTrue(result.trackerReset)
         assertEquals(AlertLevel.IDLE, result.risk.level)
         assertEquals(0f, result.risk.score, 0.0001f)
+    }
+
+    @Test
+    fun sessionStartClearsHeldRiskHysteresis() {
+        val scorer = RiskScorer(RiskProfile.BALANCED)
+        // 0.70 enters WARNING; 0.60 is in the warning exit band and would hold WARNING.
+        scorer.score(
+            listOf(
+                tracked(
+                    areaGrowth = 0.6f,
+                    centerDriftToMiddle = 0.2f,
+                    confidencePersistence = 0.8f
+                )
+            )
+        )
+        val held = scorer.score(
+            listOf(
+                tracked(
+                    areaGrowth = 0.4f,
+                    centerDriftToMiddle = 0.2f,
+                    confidencePersistence = 0.8f
+                )
+            )
+        )
+        assertEquals(AlertLevel.WARNING, held.level)
+
+        val pipeline = AnalysisPipeline(scorer = scorer)
+        val after = pipeline.process(200f, emptyList(), nowMs = 0L)
+        assertTrue(after.trackerReset)
+        assertEquals(AlertLevel.IDLE, after.risk.level)
+
+        // Same exit-band score must use enter thresholds after the session clear.
+        val remapped = scorer.score(
+            listOf(
+                tracked(
+                    areaGrowth = 0.4f,
+                    centerDriftToMiddle = 0.2f,
+                    confidencePersistence = 0.8f
+                )
+            )
+        )
+        assertEquals(0.60f, remapped.score, 0.0001f)
+        assertEquals(AlertLevel.ADVISORY, remapped.level)
     }
 }

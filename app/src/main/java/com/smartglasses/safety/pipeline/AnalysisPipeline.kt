@@ -17,7 +17,8 @@ class AnalysisPipeline(
     private val maxPauseMs: Long = 2_000L,
     private val historyWindow: Int = 8,
     private val iouMatchThreshold: Float = 0.3f,
-    private val maxMisses: Int = 5
+    private val maxMisses: Int = 5,
+    private val scorer: RiskScorer = RiskScorer(profile)
 ) {
     data class FrameResult(
         val tracked: List<TrackedVehicle>,
@@ -25,7 +26,6 @@ class AnalysisPipeline(
         val trackerReset: Boolean
     )
 
-    private val scorer = RiskScorer(profile)
     private var tracker: VehicleTracker? = null
     private var lastFrameWidth: Float? = null
     private var lastFrameAtMs: Long? = null

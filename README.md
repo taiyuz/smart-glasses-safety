@@ -13,8 +13,8 @@ Wearable-safety prototype (crossing / approach warnings). **Not production ADAS.
 - CameraX preview + `ImageAnalysis` with `STRATEGY_KEEP_ONLY_LATEST` (drop stale frames instead of queuing them).
 - Default detector: bundled ML Kit Object Detection (`MlKitVehicleDetector`, `STREAM_MODE`, multiple objects). The model is in the APK (`com.google.mlkit:object-detection:17.0.2`); no Play download at runtime.
 - Tracker: greedy IoU association plus independent constant-velocity Kalman filters on `(cx, cy, w, h)`. Tracks expire after missed frames. Same `TrackedVehicle` fields the scorer already uses (`areaGrowth`, `centerDriftToMiddle`, `confidencePersistence`). Write-up: [DESIGN.md](DESIGN.md) (Bewley et al., ICIP 2016; greedy IoU, not Hungarian, not ByteTrack).
-- `AnalysisPipeline` owns tracker + scorer for one camera session and **resets** them on `onStop`, camera rebind, resolution change, or a >2s gap between processed frames. That drops Kalman velocity from a previous scene; it is not ByteTrack.
-- Risk scorer (`CONSERVATIVE` / `BALANCED` / `SENSITIVE`), TTS debounce, latency/FPS overlay, local event log.
+- `AnalysisPipeline` owns tracker + scorer for one camera session and **resets** them on `onStop`, camera rebind, resolution change, or a >2s gap between processed frames. That drops Kalman velocity and held risk-hysteresis state from a previous scene; it is not ByteTrack.
+- Risk scorer (`CONSERVATIVE` / `BALANCED` / `SENSITIVE`) with enter/exit hysteresis so alert levels do not flicker around a threshold, TTS debounce, latency/FPS overlay, local event log.
 - Optional LiteRT path (`TFLiteVehicleDetector`): tries GPU (`CompatibilityList` + `GpuDelegate`), then NNAPI, then CPU, and logs which bound. **No trained weights are in this repo**, so this path still returns no boxes. It does not silently mock.
 
 **Mock / debug-only (not the default)**
@@ -63,7 +63,7 @@ GPU/NNAPI on the LiteRT path is the same idea: only enable a delegate if it actu
 - `.../pipeline/AnalysisPipeline.kt` — session-scoped tracker + scorer, pause/gap reset
 - `.../pipeline/MlKitVehicleDetector.kt` — default on-device detector
 - `.../pipeline/VehicleTracker.kt` — IoU + Kalman
-- `.../pipeline/RiskScorer.kt` — weighted approach score
+- `.../pipeline/RiskScorer.kt` — weighted approach score + enter/exit hysteresis
 - `.../pipeline/MockVehicleDetector` in `VehicleDetector.kt` — debug-only
 - `.../pipeline/TFLiteVehicleDetector.kt` — optional LiteRT path, GPU → NNAPI → CPU
 - [DESIGN.md](DESIGN.md) — tracker algorithm + the one paper that matches it
