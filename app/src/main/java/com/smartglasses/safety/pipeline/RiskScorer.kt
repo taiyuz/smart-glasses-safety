@@ -6,11 +6,23 @@ data class RiskResult(
     val score: Float
 )
 
+/**
+ * Maps track features to an [AlertLevel].
+ *
+ * Enter thresholds come from [RiskProfile]. Once a level is active, the score
+ * must fall below that level's exit threshold (enter − [exitMargin]) before the
+ * alert drops. Upgrades still use the enter thresholds. This stops frame-to-frame
+ * flicker when areaGrowth jitters around a cut-off; it is not ByteTrack.
+ */
 class RiskScorer(
-    private val profile: RiskProfile = RiskProfile.BALANCED
+    private val profile: RiskProfile = RiskProfile.BALANCED,
+    private val exitMargin: Float = 0.08f
 ) {
+    private var lastLevel: AlertLevel = AlertLevel.IDLE
+
     fun score(trackedVehicles: List<TrackedVehicle>): RiskResult {
         if (trackedVehicles.isEmpty()) {
+            lastLevel = AlertLevel.IDLE
             return RiskResult(AlertLevel.IDLE, "No approaching vehicles detected", 0f)
         }
 
@@ -26,12 +38,8 @@ class RiskScorer(
             raw.coerceIn(0f, 1.2f)
         }
 
-        val level = when {
-            maxRisk >= profile.criticalThreshold -> AlertLevel.CRITICAL
-            maxRisk >= profile.warningThreshold -> AlertLevel.WARNING
-            maxRisk >= profile.advisoryThreshold -> AlertLevel.ADVISORY
-            else -> AlertLevel.IDLE
-        }
+        val level = applyHysteresis(maxRisk)
+        lastLevel = level
 
         val message = when (level) {
             AlertLevel.CRITICAL -> "Critical: Vehicle approaching fast. Stop and verify."
@@ -41,6 +49,47 @@ class RiskScorer(
         }
 
         return RiskResult(level = level, message = message, score = maxRisk)
+    }
+
+    /** Clears held alert state (e.g. when [AnalysisPipeline] starts a new camera session). */
+    fun reset() {
+        lastLevel = AlertLevel.IDLE
+    }
+
+    private fun applyHysteresis(score: Float): AlertLevel {
+        val criticalEnter = profile.criticalThreshold
+        val warningEnter = profile.warningThreshold
+        val advisoryEnter = profile.advisoryThreshold
+        val criticalExit = (criticalEnter - exitMargin).coerceAtLeast(warningEnter)
+        val warningExit = (warningEnter - exitMargin).coerceAtLeast(advisoryEnter)
+        val advisoryExit = (advisoryEnter - exitMargin).coerceAtLeast(0f)
+
+        return when (lastLevel) {
+            AlertLevel.CRITICAL -> when {
+                score >= criticalExit -> AlertLevel.CRITICAL
+                score >= warningEnter -> AlertLevel.WARNING
+                score >= advisoryEnter -> AlertLevel.ADVISORY
+                else -> AlertLevel.IDLE
+            }
+            AlertLevel.WARNING -> when {
+                score >= criticalEnter -> AlertLevel.CRITICAL
+                score >= warningExit -> AlertLevel.WARNING
+                score >= advisoryEnter -> AlertLevel.ADVISORY
+                else -> AlertLevel.IDLE
+            }
+            AlertLevel.ADVISORY -> when {
+                score >= criticalEnter -> AlertLevel.CRITICAL
+                score >= warningEnter -> AlertLevel.WARNING
+                score >= advisoryExit -> AlertLevel.ADVISORY
+                else -> AlertLevel.IDLE
+            }
+            AlertLevel.IDLE -> when {
+                score >= criticalEnter -> AlertLevel.CRITICAL
+                score >= warningEnter -> AlertLevel.WARNING
+                score >= advisoryEnter -> AlertLevel.ADVISORY
+                else -> AlertLevel.IDLE
+            }
+        }
     }
 }
 
