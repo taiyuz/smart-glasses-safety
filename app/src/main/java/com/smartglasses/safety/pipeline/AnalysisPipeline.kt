@@ -7,7 +7,8 @@ package com.smartglasses.safety.pipeline
  * Miss counters do not increment while no frames arrive, so a Kalman filter would
  * still hold velocity from the previous scene. This class drops that tracker on
  * [reset], on a frame-width change, or if two processed frames are more than
- * [maxPauseMs] apart.
+ * [maxPauseMs] apart. The same session boundary clears [RiskScorer] hysteresis so
+ * a held WARNING from street A cannot suppress IDLE/ADVISORY on street B.
  *
  * Session hygiene only — not ByteTrack, not ReID, not a second association pass.
  */
@@ -44,6 +45,7 @@ class AnalysisPipeline(
                 iouMatchThreshold = iouMatchThreshold,
                 maxMisses = maxMisses
             )
+            scorer.reset()
         }
         lastFrameWidth = frameWidth
         lastFrameAtMs = nowMs
@@ -59,5 +61,6 @@ class AnalysisPipeline(
         tracker = null
         lastFrameWidth = null
         lastFrameAtMs = null
+        scorer.reset()
     }
 }
