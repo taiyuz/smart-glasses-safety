@@ -25,6 +25,26 @@ class RiskScorerTest {
         )
     }
 
+    /** BALANCED: 0.6*0.5 + 0.8*0.3 + 0.8*0.2 = 0.70 (WARNING enter). */
+    private fun warningEnterVehicle() =
+        vehicle(areaGrowth = 0.6f, centerDriftToMiddle = 0.2f, confidencePersistence = 0.8f)
+
+    /** BALANCED: 0.4*0.5 + 0.8*0.3 + 0.8*0.2 = 0.60 (between warning exit 0.57 and enter 0.65). */
+    private fun warningExitBandVehicle() =
+        vehicle(areaGrowth = 0.4f, centerDriftToMiddle = 0.2f, confidencePersistence = 0.8f)
+
+    /** BALANCED: 0.3*0.5 + 0.8*0.3 + 0.8*0.2 = 0.55 (ADVISORY, below warning exit). */
+    private fun advisoryBelowWarningExitVehicle() =
+        vehicle(areaGrowth = 0.3f, centerDriftToMiddle = 0.2f, confidencePersistence = 0.8f)
+
+    /** BALANCED: 0.2*0.5 + 0.5*0.3 + 0.8*0.2 = 0.41 (between advisory exit 0.37 and enter 0.45). */
+    private fun advisoryExitBandVehicle() =
+        vehicle(areaGrowth = 0.2f, centerDriftToMiddle = 0.5f, confidencePersistence = 0.8f)
+
+    /** BALANCED: 0.7*0.5 + 0.9*0.3 + 0.85*0.2 = 0.79 (between critical exit 0.74 and enter 0.82). */
+    private fun criticalExitBandVehicle() =
+        vehicle(areaGrowth = 0.7f, centerDriftToMiddle = 0.1f, confidencePersistence = 0.85f)
+
     @Test
     fun idleWhenNoVehicles() {
         val result = RiskScorer(RiskProfile.BALANCED).score(emptyList())
@@ -159,5 +179,88 @@ class RiskScorerTest {
         )
         assertEquals(AlertLevel.CRITICAL, result.level)
         assertEquals("Critical: Vehicle approaching fast. Stop and verify.", result.message)
+    }
+
+    @Test
+    fun holdsWarningWhenScoreDipsIntoExitBand() {
+        val scorer = RiskScorer(RiskProfile.BALANCED)
+        val entered = scorer.score(listOf(warningEnterVehicle()))
+        assertEquals(AlertLevel.WARNING, entered.level)
+        assertEquals(0.70f, entered.score, 0.0001f)
+
+        val held = scorer.score(listOf(warningExitBandVehicle()))
+        assertEquals(0.60f, held.score, 0.0001f)
+        assertEquals(AlertLevel.WARNING, held.level)
+    }
+
+    @Test
+    fun freshScorerMapsExitBandScoreToAdvisory() {
+        val result = RiskScorer(RiskProfile.BALANCED).score(listOf(warningExitBandVehicle()))
+        assertEquals(0.60f, result.score, 0.0001f)
+        assertEquals(AlertLevel.ADVISORY, result.level)
+    }
+
+    @Test
+    fun dropsWarningOnceScoreFallsBelowExit() {
+        val scorer = RiskScorer(RiskProfile.BALANCED)
+        scorer.score(listOf(warningEnterVehicle()))
+        val dropped = scorer.score(listOf(advisoryBelowWarningExitVehicle()))
+        assertEquals(0.55f, dropped.score, 0.0001f)
+        assertEquals(AlertLevel.ADVISORY, dropped.level)
+    }
+
+    @Test
+    fun holdsAdvisoryWhenScoreDipsIntoExitBand() {
+        val scorer = RiskScorer(RiskProfile.BALANCED)
+        // 0.55 enters ADVISORY on a fresh scorer
+        val entered = scorer.score(listOf(advisoryBelowWarningExitVehicle()))
+        assertEquals(AlertLevel.ADVISORY, entered.level)
+
+        val held = scorer.score(listOf(advisoryExitBandVehicle()))
+        assertEquals(0.41f, held.score, 0.0001f)
+        assertEquals(AlertLevel.ADVISORY, held.level)
+    }
+
+    @Test
+    fun holdsCriticalWhenScoreDipsIntoExitBand() {
+        val scorer = RiskScorer(RiskProfile.BALANCED)
+        scorer.score(listOf(vehicle(areaGrowth = 1.2f, centerDriftToMiddle = 0.05f)))
+        val held = scorer.score(listOf(criticalExitBandVehicle()))
+        assertEquals(0.79f, held.score, 0.0001f)
+        assertEquals(AlertLevel.CRITICAL, held.level)
+    }
+
+    @Test
+    fun upgradesImmediatelyFromWarningToCritical() {
+        val scorer = RiskScorer(RiskProfile.BALANCED)
+        scorer.score(listOf(warningEnterVehicle()))
+        val upgraded = scorer.score(
+            listOf(vehicle(areaGrowth = 1.2f, centerDriftToMiddle = 0.05f))
+        )
+        assertEquals(AlertLevel.CRITICAL, upgraded.level)
+    }
+
+    @Test
+    fun resetClearsHeldWarning() {
+        val scorer = RiskScorer(RiskProfile.BALANCED)
+        scorer.score(listOf(warningEnterVehicle()))
+        scorer.score(listOf(warningExitBandVehicle()))
+        scorer.reset()
+        val after = scorer.score(listOf(warningExitBandVehicle()))
+        assertEquals(AlertLevel.ADVISORY, after.level)
+    }
+
+    @Test
+    fun emptyListClearsHeldCritical() {
+        val scorer = RiskScorer(RiskProfile.BALANCED)
+        scorer.score(listOf(vehicle(areaGrowth = 1.2f, centerDriftToMiddle = 0.05f)))
+        val cleared = scorer.score(emptyList())
+        assertEquals(AlertLevel.IDLE, cleared.level)
+        assertEquals(0f, cleared.score, 0.0001f)
+
+        // Same exit-band score must not re-enter CRITICAL without crossing enter.
+        val after = scorer.score(listOf(criticalExitBandVehicle()))
+        assertEquals(0.79f, after.score, 0.0001f)
+        assertEquals(AlertLevel.WARNING, after.level)
     }
 }
